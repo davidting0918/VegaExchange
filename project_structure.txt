@@ -1,0 +1,42 @@
+VegaExchange/
+├── app/
+│   ├── api/                    # FastAPI 路由 (RESTful 與 WebSocket)
+│   │   ├── routes/
+│   │   │   ├── user.py         # 使用者登入註冊與查詢
+│   │   │   ├── order.py        # 下單 API (買入/賣出)
+│   │   │   └── websocket.py    # WebSocket 處理 (訂單簿即時更新)
+│   │   └── deps.py             # 共用依賴與驗證 (Token, UID 等)
+│   
+│   ├── core/
+│   │   ├── config.py           # 設定檔載入與環境變數
+│   │   └── security.py         # 驗證與加密處理 (JWT, 密碼雜湊)
+│   
+│   ├── models/
+│   │   ├── user.py             # 使用者資料模型
+│   │   └── order.py            # 訂單資料模型
+│   
+│   ├── db/
+│   │   ├── mongo.py            # MongoDB 初始化與連線處理
+│   │   └── crud.py             # 與資料庫操作邏輯
+│   
+│   ├── services/
+│   │   ├── matcher/
+│   │   │   ├── amm.py          # AMM 自動做市商邏輯實作
+│   │   │   └── clob.py         # 中央限價訂單簿邏輯 (未來擴展)
+│   │   ├── order_service.py    # 下單業務邏輯處理
+│   │   └── user_service.py     # 使用者業務邏輯處理
+│   
+│   ├── schemas/
+│   │   ├── user.py             # Pydantic 模型 - 使用者
+│   │   └── order.py            # Pydantic 模型 - 訂單
+│   
+│   └── main.py                 # FastAPI 進入點
+│
+├── tests/
+│   ├── test_user.py            # 使用者模組測試
+│   ├── test_order.py           # 訂單模組測試
+│   └── test_matcher.py         # 撮合邏輯測試
+│
+├── .env                        # 環境變數設定
+├── requirements.txt           # Python 套件依賴
+└── README.md                  # 專案說明文件
