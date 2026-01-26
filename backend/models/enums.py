@@ -1,51 +1,66 @@
 """
 Enum definitions for VegaExchange
+
+Using IntEnum for database storage efficiency.
+Integer values are stored in database, providing faster comparisons and smaller indexes.
 """
 
-from enum import Enum
+from enum import IntEnum
 
 
-class EngineType(str, Enum):
-    """Trading engine types"""
-
-    AMM = "amm"
-    CLOB = "clob"
-
-
-class SymbolStatus(str, Enum):
-    """Symbol trading status"""
-
-    ACTIVE = "active"
-    PAUSED = "paused"
-    MAINTENANCE = "maintenance"
+class EngineType(IntEnum):
+    """
+    Trading engine types
+    Database: SMALLINT
+    """
+    AMM = 0
+    CLOB = 1
 
 
-class OrderSide(str, Enum):
-    """Order side (buy/sell)"""
-
-    BUY = "buy"
-    SELL = "sell"
-
-
-class OrderType(str, Enum):
-    """Order type"""
-
-    MARKET = "market"
-    LIMIT = "limit"
+class SymbolStatus(IntEnum):
+    """
+    Symbol trading status
+    Database: SMALLINT
+    """
+    ACTIVE = 0
+    PAUSED = 1
+    MAINTENANCE = 2
 
 
-class OrderStatus(str, Enum):
-    """Order status"""
+class OrderSide(IntEnum):
+    """
+    Order side (buy/sell)
+    Database: SMALLINT
+    """
+    BUY = 0
+    SELL = 1
 
-    OPEN = "open"
-    PARTIAL = "partial"
-    FILLED = "filled"
-    CANCELLED = "cancelled"
+
+class OrderType(IntEnum):
+    """
+    Order type
+    Database: SMALLINT
+    """
+    MARKET = 0
+    LIMIT = 1
 
 
-class TradeStatus(str, Enum):
-    """Trade execution status"""
+class OrderStatus(IntEnum):
+    """
+    Order status
+    Database: SMALLINT
+    """
+    OPEN = 0
+    PARTIAL = 1
+    FILLED = 2
+    CANCELLED = 3
 
-    PENDING = "pending"
-    COMPLETED = "completed"
-    FAILED = "failed"
+
+class TradeStatus(IntEnum):
+    """
+    Trade execution status
+    Database: SMALLINT
+    """
+    PENDING = 0
+    COMPLETED = 1
+    FAILED = 2

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.core.db_manager import get_db
 from backend.engines.engine_router import EngineRouter
-from backend.models.enums import EngineType
+from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType, SymbolStatus
 from backend.models.responses import APIResponse
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -46,7 +46,7 @@ async def initialize_amm_pool(
     if not config:
         raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
 
-    if config["engine_type"] not in ["amm", "hybrid"]:
+    if config["engine_type"] != EngineType.AMM:
         raise HTTPException(status_code=400, detail="Symbol is not an AMM type")
 
     # Update or create pool
@@ -110,7 +110,7 @@ async def seed_orderbook(
     if not config:
         raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
 
-    if config["engine_type"] not in ["clob", "hybrid"]:
+    if config["engine_type"] != EngineType.CLOB:
         raise HTTPException(status_code=400, detail="Symbol is not a CLOB type")
 
     # Calculate price levels
@@ -128,12 +128,15 @@ async def seed_orderbook(
             INSERT INTO orderbook_orders (
                 symbol_config_id, user_id, side, order_type,
                 price, quantity, remaining_quantity, status
-            ) VALUES ($1, $2, 'buy', 'limit', $3, $4, $4, 'open')
+            ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
             """,
             config["id"],
             admin_user_id,
+            OrderSide.BUY.value,
+            OrderType.LIMIT.value,
             price,
             quantity_per_level,
+            OrderStatus.OPEN.value,
         )
         orders_created += 1
 
@@ -146,12 +149,15 @@ async def seed_orderbook(
             INSERT INTO orderbook_orders (
                 symbol_config_id, user_id, side, order_type,
                 price, quantity, remaining_quantity, status
-            ) VALUES ($1, $2, 'sell', 'limit', $3, $4, $4, 'open')
+            ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
             """,
             config["id"],
             admin_user_id,
+            OrderSide.SELL.value,
+            OrderType.LIMIT.value,
             price,
             quantity_per_level,
+            OrderStatus.OPEN.value,
         )
         orders_created += 1
 
@@ -246,12 +252,12 @@ async def get_system_stats():
 
     # Active symbols
     symbol_count = await db.read_one(
-        "SELECT COUNT(*) as count FROM symbol_configs WHERE status = 'active'"
+        f"SELECT COUNT(*) as count FROM symbol_configs WHERE status = {SymbolStatus.ACTIVE}"
     )
 
     # Open orders
     open_orders = await db.read_one(
-        "SELECT COUNT(*) as count FROM orderbook_orders WHERE status IN ('open', 'partial')"
+        f"SELECT COUNT(*) as count FROM orderbook_orders WHERE status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})"
     )
 
     return APIResponse(
@@ -288,10 +294,10 @@ async def clear_all_orders(
 
     # Cancel all open orders
     result = await db.execute(
-        """
+        f"""
         UPDATE orderbook_orders
-        SET status = 'cancelled', cancelled_at = NOW()
-        WHERE symbol_config_id = $1 AND status IN ('open', 'partial')
+        SET status = {OrderStatus.CANCELLED}, cancelled_at = NOW()
+        WHERE symbol_config_id = $1 AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
         """,
         config["id"],
     )

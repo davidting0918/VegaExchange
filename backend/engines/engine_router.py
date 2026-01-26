@@ -9,7 +9,7 @@ from uuid import UUID
 from backend.engines.amm_engine import AMMEngine
 from backend.engines.base_engine import BaseEngine, QuoteResult, TradeResult
 from backend.engines.clob_engine import CLOBEngine
-from backend.models.enums import EngineType, OrderSide, OrderType
+from backend.models.enums import EngineType, OrderSide, OrderType, SymbolStatus
 
 
 class EngineRouter:
@@ -35,9 +35,9 @@ class EngineRouter:
     async def _get_symbol_config(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get symbol configuration from database"""
         return await self.db.read_one(
-            """
+            f"""
             SELECT * FROM symbol_configs
-            WHERE symbol = $1 AND status = 'active'
+            WHERE symbol = $1 AND status = {SymbolStatus.ACTIVE}
             """,
             symbol.upper(),
         )
@@ -169,9 +169,9 @@ class EngineRouter:
     async def get_all_symbols(self) -> list[Dict[str, Any]]:
         """Get all active symbols with their configurations"""
         return await self.db.read(
-            """
+            f"""
             SELECT * FROM symbol_configs
-            WHERE status = 'active'
+            WHERE status = {SymbolStatus.ACTIVE}
             ORDER BY symbol
             """
         )

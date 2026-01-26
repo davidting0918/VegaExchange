@@ -59,7 +59,7 @@ class CLOBEngine(BaseEngine):
             SELECT * FROM orderbook_orders
             WHERE symbol_config_id = $1
             AND side = $2
-            AND status IN ('open', 'partial')
+            AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
             AND price IS NOT NULL
             ORDER BY {order_clause}
             LIMIT $3
@@ -74,12 +74,12 @@ class CLOBEngine(BaseEngine):
     async def _get_order_book(self, levels: int = 20) -> Dict[str, List[Dict[str, Any]]]:
         """Get aggregated order book with bid/ask levels"""
         bids = await self.db.read(
-            """
+            f"""
             SELECT price, SUM(remaining_quantity) as quantity, COUNT(*) as order_count
             FROM orderbook_orders
             WHERE symbol_config_id = $1
-            AND side = 'buy'
-            AND status IN ('open', 'partial')
+            AND side = {OrderSide.BUY}
+            AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
             AND price IS NOT NULL
             GROUP BY price
             ORDER BY price DESC
@@ -90,12 +90,12 @@ class CLOBEngine(BaseEngine):
         )
 
         asks = await self.db.read(
-            """
+            f"""
             SELECT price, SUM(remaining_quantity) as quantity, COUNT(*) as order_count
             FROM orderbook_orders
             WHERE symbol_config_id = $1
-            AND side = 'sell'
-            AND status IN ('open', 'partial')
+            AND side = {OrderSide.SELL}
+            AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
             AND price IS NOT NULL
             GROUP BY price
             ORDER BY price ASC
@@ -121,7 +121,7 @@ class CLOBEngine(BaseEngine):
             INSERT INTO orderbook_orders (
                 symbol_config_id, user_id, side, order_type,
                 price, quantity, remaining_quantity, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $6, 'open')
+            ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
             RETURNING id
             """,
             self.symbol_config["id"],
@@ -130,6 +130,7 @@ class CLOBEngine(BaseEngine):
             order_type.value,
             price,
             quantity,
+            OrderStatus.OPEN.value,
         )
         return result["id"]
 
@@ -620,10 +621,10 @@ class CLOBEngine(BaseEngine):
         """Cancel an open order"""
         # Get order details
         order = await self.db.read_one(
-            """
+            f"""
             SELECT * FROM orderbook_orders
             WHERE id = $1 AND user_id = $2
-            AND status IN ('open', 'partial')
+            AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
             """,
             order_id,
             user_id,
@@ -634,7 +635,7 @@ class CLOBEngine(BaseEngine):
 
         # Unlock remaining balance
         remaining = Decimal(str(order["remaining_quantity"]))
-        if order["side"] == "buy":
+        if order["side"] == OrderSide.BUY:
             unlock_asset = self.quote_asset
             unlock_amount = Decimal(str(order["price"])) * remaining
         else:
@@ -647,12 +648,13 @@ class CLOBEngine(BaseEngine):
         await self.db.execute(
             """
             UPDATE orderbook_orders
-            SET status = 'cancelled',
+            SET status = $2,
                 cancelled_at = NOW(),
                 updated_at = NOW()
             WHERE id = $1
             """,
             order_id,
+            OrderStatus.CANCELLED.value,
         )
 
         return {

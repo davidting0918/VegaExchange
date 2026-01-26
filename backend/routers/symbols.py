@@ -168,10 +168,11 @@ async def delete_symbol(symbol: str, router: EngineRouter = Depends(get_router))
     result = await db.execute(
         """
         UPDATE symbol_configs
-        SET status = 'maintenance', updated_at = NOW()
+        SET status = $2, updated_at = NOW()
         WHERE symbol = $1
         """,
         symbol.upper(),
+        SymbolStatus.MAINTENANCE.value,
     )
 
     if "UPDATE 0" in result:

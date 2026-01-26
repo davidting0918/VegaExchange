@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.core.db_manager import get_db
+from backend.models.enums import SymbolStatus
 from backend.models.responses import APIResponse, BalanceResponse
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -260,11 +261,11 @@ async def get_user_portfolio(user_id: UUID = Query(..., description="User ID")):
 
     # Get AMM prices
     amm_prices = await db.read(
-        """
+        f"""
         SELECT sc.base_asset, ap.reserve_quote / ap.reserve_base as price
         FROM amm_pools ap
         JOIN symbol_configs sc ON ap.symbol_config_id = sc.id
-        WHERE sc.status = 'active' AND ap.reserve_base > 0
+        WHERE sc.status = {SymbolStatus.ACTIVE} AND ap.reserve_base > 0
         """
     )
     for p in amm_prices:
