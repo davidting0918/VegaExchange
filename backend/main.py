@@ -1,0 +1,114 @@
+"""
+VegaExchange - Trading Simulation Laboratory
+
+FastAPI application entry point.
+"""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from backend.core.db_manager import close_database, init_database
+from backend.core.environment import env_config
+from backend.routers import admin_router, market_router, symbols_router, trading_router, users_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    # Startup
+    print(f"Starting VegaExchange in {env_config.environment.value} mode...")
+    await init_database()
+    print("Database connection established.")
+
+    yield
+
+    # Shutdown
+    print("Shutting down VegaExchange...")
+    await close_database()
+    print("Database connection closed.")
+
+
+# Create FastAPI application
+app = FastAPI(
+    title="VegaExchange API",
+    description="""
+    Trading Simulation Laboratory - A platform for experimenting with
+    different market mechanisms (AMM, CLOB, Hybrid, Batch Auction).
+
+    ## Features
+    - Per-symbol engine assignment
+    - Unified trade API across all engine types
+    - Real-time market data
+    - Simulated balances
+
+    ## Engine Types
+    - **AMM**: Automated Market Maker with constant product formula
+    - **CLOB**: Central Limit Order Book with price-time priority
+    - **Hybrid**: Combines AMM and CLOB (coming soon)
+    - **Batch Auction**: Periodic batch matching (coming soon)
+    """,
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=env_config.get("cors_origins", ["*"]),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register routers
+app.include_router(symbols_router)
+app.include_router(trading_router)
+app.include_router(market_router)
+app.include_router(users_router)
+app.include_router(admin_router)
+
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "name": "VegaExchange API",
+        "version": "1.0.0",
+        "environment": env_config.environment.value,
+        "docs": "/docs",
+        "redoc": "/redoc",
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    from backend.core.db_manager import get_db
+
+    try:
+        db = get_db()
+        await db.read_one("SELECT 1")
+        db_status = "healthy"
+    except Exception as e:
+        db_status = f"unhealthy: {str(e)}"
+
+    return {
+        "status": "ok" if db_status == "healthy" else "degraded",
+        "environment": env_config.environment.value,
+        "database": db_status,
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "backend.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=env_config.get("debug", False),
+    )

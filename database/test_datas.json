@@ -1,0 +1,82 @@
+{
+  "symbols": [
+    {
+      "symbol": "ORDER-USDT",
+      "base_asset": "ORDER",
+      "quote_asset": "USDT",
+      "engine_type": "clob",
+      "engine_params": {
+        "maker_fee": 0.001,
+        "taker_fee": 0.002,
+        "tick_size": 0.01,
+        "lot_size": 0.1
+      },
+      "min_trade_amount": 0.1,
+      "max_trade_amount": 100000,
+      "price_precision": 4,
+      "quantity_precision": 4
+    },
+    {
+      "symbol": "AMM-USDT",
+      "base_asset": "AMM",
+      "quote_asset": "USDT",
+      "engine_type": "amm",
+      "engine_params": {
+        "fee_rate": 0.003,
+        "initial_reserve_base": 10000,
+        "initial_reserve_quote": 100000
+      },
+      "min_trade_amount": 0.001,
+      "max_trade_amount": 100000,
+      "price_precision": 6,
+      "quantity_precision": 6
+    }
+  ],
+  "test_users": [
+    {
+      "google_id": "test_user_001",
+      "email": "testuser1@vegaexchange.test",
+      "display_name": "Test User 1",
+      "is_admin": false,
+      "initial_balances": {
+        "USDT": 100000,
+        "ORDER": 1000,
+        "AMM": 1000
+      }
+    },
+    {
+      "google_id": "test_user_002",
+      "email": "testuser2@vegaexchange.test",
+      "display_name": "Test User 2",
+      "is_admin": false,
+      "initial_balances": {
+        "USDT": 100000,
+        "ORDER": 1000,
+        "AMM": 1000
+      }
+    },
+    {
+      "google_id": "admin_user_001",
+      "email": "admin@vegaexchange.test",
+      "display_name": "Admin User",
+      "is_admin": true,
+      "initial_balances": {
+        "USDT": 10000000,
+        "ORDER": 1000000,
+        "AMM": 1000000
+      }
+    }
+  ],
+  "seed_orderbook": {
+    "ORDER-USDT": {
+      "mid_price": 10.0,
+      "spread_pct": 1.0,
+      "levels": 10,
+      "quantity_per_level": 100
+    }
+  },
+  "notes": {
+    "ORDER-USDT": "CLOB (Order Book) - Traditional exchange style with limit/market orders",
+    "AMM-USDT": "AMM (Automated Market Maker) - DEX style with constant product formula (x*y=k)"
+  }
+}
