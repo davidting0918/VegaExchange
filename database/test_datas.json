@@ -4,7 +4,7 @@
       "symbol": "ORDER-USDT",
       "base_asset": "ORDER",
       "quote_asset": "USDT",
-      "engine_type": "clob",
+      "engine_type": 1,
       "engine_params": {
         "maker_fee": 0.001,
         "taker_fee": 0.002,
@@ -20,7 +20,7 @@
       "symbol": "AMM-USDT",
       "base_asset": "AMM",
       "quote_asset": "USDT",
-      "engine_type": "amm",
+      "engine_type": 0,
       "engine_params": {
         "fee_rate": 0.003,
         "initial_reserve_base": 10000,
@@ -75,8 +75,34 @@
       "quantity_per_level": 100
     }
   },
-  "notes": {
-    "ORDER-USDT": "CLOB (Order Book) - Traditional exchange style with limit/market orders",
-    "AMM-USDT": "AMM (Automated Market Maker) - DEX style with constant product formula (x*y=k)"
+  "enum_reference": {
+    "engine_type": {
+      "0": "AMM",
+      "1": "CLOB"
+    },
+    "symbol_status": {
+      "0": "active",
+      "1": "paused",
+      "2": "maintenance"
+    },
+    "order_side": {
+      "0": "buy",
+      "1": "sell"
+    },
+    "order_type": {
+      "0": "market",
+      "1": "limit"
+    },
+    "order_status": {
+      "0": "open",
+      "1": "partial",
+      "2": "filled",
+      "3": "cancelled"
+    },
+    "trade_status": {
+      "0": "pending",
+      "1": "completed",
+      "2": "failed"
+    }
   }
 }
