@@ -6,29 +6,24 @@ Unified trading endpoint that routes to the appropriate engine.
 
 from decimal import Decimal
 from typing import List, Optional
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from backend.core.auth import get_current_user_id
+from backend.core.dependencies import get_router
 from backend.core.db_manager import get_db
-from backend.engines.clob_engine import CLOBEngine
 from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType
-from backend.models.requests import PlaceOrderRequest, SwapRequest, TradeRequest
-from backend.models.responses import APIResponse, OrderResponse, QuoteResponse, TradeResponse
+from backend.models.requests import AddLiquidityRequest, PlaceOrderRequest, RemoveLiquidityRequest, SwapRequest, TradeRequest
+from backend.models.responses import APIResponse
 
 router = APIRouter(prefix="/api/trade", tags=["trading"])
-
-
-def get_router() -> EngineRouter:
-    """Dependency to get engine router"""
-    return EngineRouter(get_db())
 
 
 @router.post("", response_model=APIResponse)
 async def execute_trade(
     request: TradeRequest,
-    user_id: UUID = Query(..., description="User ID (will be from JWT in production)"),
+    user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),
 ):
     """
@@ -80,7 +75,7 @@ async def execute_trade(
 @router.post("/swap", response_model=APIResponse)
 async def execute_swap(
     request: SwapRequest,
-    user_id: UUID = Query(..., description="User ID"),
+    user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),
 ):
     """
@@ -126,7 +121,7 @@ async def execute_swap(
 @router.post("/order", response_model=APIResponse)
 async def place_order(
     request: PlaceOrderRequest,
-    user_id: UUID = Query(..., description="User ID"),
+    user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),
 ):
     """
@@ -165,9 +160,9 @@ async def place_order(
 
 @router.delete("/order/{order_id}", response_model=APIResponse)
 async def cancel_order(
-    order_id: UUID,
+    order_id: str,
     symbol: str = Query(..., description="Symbol of the order"),
-    user_id: UUID = Query(..., description="User ID"),
+    user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),
 ):
     """
@@ -234,7 +229,7 @@ async def get_quote(
 
 @router.get("/orders", response_model=APIResponse)
 async def get_user_orders(
-    user_id: UUID = Query(..., description="User ID"),
+    user_id: str = Depends(get_current_user_id),
     symbol: Optional[str] = Query(None, description="Filter by symbol"),
     status: Optional[List[OrderStatus]] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=200, description="Max results"),
@@ -248,7 +243,7 @@ async def get_user_orders(
 
     query = """
         SELECT o.*, sc.symbol FROM orderbook_orders o
-        JOIN symbol_configs sc ON o.symbol_config_id = sc.id
+        JOIN symbol_configs sc USING (symbol_id)
         WHERE o.user_id = $1
     """
     params = [user_id]
@@ -275,7 +270,7 @@ async def get_user_orders(
 
 @router.get("/history", response_model=APIResponse)
 async def get_trade_history(
-    user_id: UUID = Query(..., description="User ID"),
+    user_id: str = Depends(get_current_user_id),
     symbol: Optional[str] = Query(None, description="Filter by symbol"),
     engine_type: Optional[EngineType] = Query(None, description="Filter by engine type"),
     limit: int = Query(50, ge=1, le=200, description="Max results"),
@@ -289,7 +284,7 @@ async def get_trade_history(
 
     query = """
         SELECT t.*, sc.symbol FROM trades t
-        JOIN symbol_configs sc ON t.symbol_config_id = sc.id
+        JOIN symbol_configs sc USING (symbol_id)
         WHERE t.user_id = $1
     """
     params = [user_id]
@@ -311,3 +306,154 @@ async def get_trade_history(
     trades = await db.read(query, *params)
 
     return APIResponse(success=True, data=trades)
+
+
+@router.post("/liquidity/add", response_model=APIResponse)
+async def add_liquidity(
+    request: AddLiquidityRequest,
+    user_id: str = Depends(get_current_user_id),
+    router: EngineRouter = Depends(get_router),
+):
+    """
+    Add liquidity to an AMM pool.
+
+    User provides both base and quote assets in the correct ratio.
+    Returns LP shares representing the user's share of the pool.
+    """
+    engine = await router._get_engine(request.symbol)
+
+    if not engine:
+        raise HTTPException(status_code=404, detail=f"Symbol '{request.symbol}' not found")
+
+    if engine.engine_type != EngineType.AMM:
+        raise HTTPException(status_code=400, detail="Add liquidity only works for AMM symbols")
+
+    result = await engine.add_liquidity(
+        user_id=user_id,
+        base_amount=request.base_amount,
+        quote_amount=request.quote_amount,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to add liquidity"))
+
+    return APIResponse(
+        success=True,
+        data={
+            "symbol": request.symbol.upper(),
+            "lp_shares": result["lp_shares"],
+            "pool_id": result["pool_id"],
+            "reserve_base": result["reserve_base"],
+            "reserve_quote": result["reserve_quote"],
+            "total_lp_shares": result["total_lp_shares"],
+        },
+    )
+
+
+@router.post("/liquidity/remove", response_model=APIResponse)
+async def remove_liquidity(
+    request: RemoveLiquidityRequest,
+    user_id: str = Depends(get_current_user_id),
+    router: EngineRouter = Depends(get_router),
+):
+    """
+    Remove liquidity from an AMM pool.
+
+    User burns LP shares and receives back base and quote assets
+    proportional to their share of the pool.
+    """
+    engine = await router._get_engine(request.symbol)
+
+    if not engine:
+        raise HTTPException(status_code=404, detail=f"Symbol '{request.symbol}' not found")
+
+    if engine.engine_type != EngineType.AMM:
+        raise HTTPException(status_code=400, detail="Remove liquidity only works for AMM symbols")
+
+    result = await engine.remove_liquidity(
+        user_id=user_id,
+        lp_shares=request.lp_shares,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to remove liquidity"))
+
+    return APIResponse(
+        success=True,
+        data={
+            "symbol": request.symbol.upper(),
+            "base_out": result["base_out"],
+            "quote_out": result["quote_out"],
+            "lp_shares_burned": result["lp_shares_burned"],
+            "remaining_lp_shares": result["remaining_lp_shares"],
+            "pool_id": result["pool_id"],
+            "reserve_base": result["reserve_base"],
+            "reserve_quote": result["reserve_quote"],
+            "total_lp_shares": result["total_lp_shares"],
+        },
+    )
+
+
+@router.get("/liquidity/position", response_model=APIResponse)
+async def get_lp_position(
+    symbol: str = Query(..., description="Trading symbol"),
+    user_id: str = Depends(get_current_user_id),
+    router: EngineRouter = Depends(get_router),
+):
+    """
+    Get user's LP position for an AMM pool.
+    """
+    engine = await router._get_engine(symbol)
+
+    if not engine:
+        raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
+
+    if engine.engine_type != EngineType.AMM:
+        raise HTTPException(status_code=400, detail="LP positions only available for AMM symbols")
+
+    position = await engine._get_lp_position(user_id)
+
+    if not position:
+        return APIResponse(
+            success=True,
+            data={
+                "symbol": symbol.upper(),
+                "lp_shares": 0,
+                "has_position": False,
+            },
+        )
+
+    # Get current pool info to calculate user's share
+    pool = await engine._get_pool()
+    if pool:
+        user_lp_shares = Decimal(str(position["lp_shares"]))
+        total_lp_shares = Decimal(str(pool["total_lp_shares"]))
+        reserve_base = Decimal(str(pool["reserve_base"]))
+        reserve_quote = Decimal(str(pool["reserve_quote"]))
+
+        if total_lp_shares > 0:
+            share_ratio = user_lp_shares / total_lp_shares
+            estimated_base_value = reserve_base * share_ratio
+            estimated_quote_value = reserve_quote * share_ratio
+        else:
+            estimated_base_value = Decimal("0")
+            estimated_quote_value = Decimal("0")
+            share_ratio = Decimal("0")
+    else:
+        estimated_base_value = Decimal("0")
+        estimated_quote_value = Decimal("0")
+        share_ratio = Decimal("0")
+
+    return APIResponse(
+        success=True,
+        data={
+            "symbol": symbol.upper(),
+            "lp_shares": float(position["lp_shares"]),
+            "initial_base_amount": float(position["initial_base_amount"]),
+            "initial_quote_amount": float(position["initial_quote_amount"]),
+            "estimated_base_value": float(estimated_base_value),
+            "estimated_quote_value": float(estimated_quote_value),
+            "pool_share_percentage": float(share_ratio * 100),
+            "has_position": True,
+        },
+    )

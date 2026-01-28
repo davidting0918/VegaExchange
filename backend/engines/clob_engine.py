@@ -7,8 +7,8 @@ Implements traditional order book matching with price-time priority.
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
+from backend.core.id_generator import generate_order_id
 from backend.engines.base_engine import BaseEngine, QuoteResult, TradeResult
 from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType, TradeStatus
 
@@ -57,14 +57,14 @@ class CLOBEngine(BaseEngine):
         orders = await self.db.read(
             f"""
             SELECT * FROM orderbook_orders
-            WHERE symbol_config_id = $1
+            WHERE symbol_id = $1
             AND side = $2
             AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
             AND price IS NOT NULL
             ORDER BY {order_clause}
             LIMIT $3
             """,
-            self.symbol_config["id"],
+            self.symbol_config["symbol_id"],
             opposite_side.value,
             limit,
         )
@@ -77,7 +77,7 @@ class CLOBEngine(BaseEngine):
             f"""
             SELECT price, SUM(remaining_quantity) as quantity, COUNT(*) as order_count
             FROM orderbook_orders
-            WHERE symbol_config_id = $1
+            WHERE symbol_id = $1
             AND side = {OrderSide.BUY}
             AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
             AND price IS NOT NULL
@@ -85,7 +85,7 @@ class CLOBEngine(BaseEngine):
             ORDER BY price DESC
             LIMIT $2
             """,
-            self.symbol_config["id"],
+            self.symbol_config["symbol_id"],
             levels,
         )
 
@@ -93,7 +93,7 @@ class CLOBEngine(BaseEngine):
             f"""
             SELECT price, SUM(remaining_quantity) as quantity, COUNT(*) as order_count
             FROM orderbook_orders
-            WHERE symbol_config_id = $1
+            WHERE symbol_id = $1
             AND side = {OrderSide.SELL}
             AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
             AND price IS NOT NULL
@@ -101,7 +101,7 @@ class CLOBEngine(BaseEngine):
             ORDER BY price ASC
             LIMIT $2
             """,
-            self.symbol_config["id"],
+            self.symbol_config["symbol_id"],
             levels,
         )
 
@@ -109,22 +109,26 @@ class CLOBEngine(BaseEngine):
 
     async def _create_order(
         self,
-        user_id: UUID,
+        user_id: str,
         side: OrderSide,
         order_type: OrderType,
         quantity: Decimal,
         price: Optional[Decimal],
-    ) -> UUID:
+    ) -> str:
         """Create a new order in the order book"""
+        # Generate order ID
+        order_id = generate_order_id()
+        
         result = await self.db.execute_returning(
             """
             INSERT INTO orderbook_orders (
-                symbol_config_id, user_id, side, order_type,
+                order_id, symbol_id, user_id, side, order_type,
                 price, quantity, remaining_quantity, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
-            RETURNING id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
+            RETURNING order_id
             """,
-            self.symbol_config["id"],
+            order_id,
+            self.symbol_config["symbol_id"],
             user_id,
             side.value,
             order_type.value,
@@ -132,11 +136,11 @@ class CLOBEngine(BaseEngine):
             quantity,
             OrderStatus.OPEN.value,
         )
-        return result["id"]
+        return result["order_id"]
 
     async def _update_order(
         self,
-        order_id: UUID,
+        order_id: str,
         filled_amount: Decimal,
         new_status: OrderStatus,
     ) -> bool:
@@ -150,7 +154,7 @@ class CLOBEngine(BaseEngine):
                     status = $3,
                     filled_at = NOW(),
                     updated_at = NOW()
-                WHERE id = $1
+                WHERE order_id = $1
                 """,
                 order_id,
                 filled_amount,
@@ -164,7 +168,7 @@ class CLOBEngine(BaseEngine):
                     remaining_quantity = remaining_quantity - $2,
                     status = $3,
                     updated_at = NOW()
-                WHERE id = $1
+                WHERE order_id = $1
                 """,
                 order_id,
                 filled_amount,
@@ -172,7 +176,7 @@ class CLOBEngine(BaseEngine):
             )
         return "UPDATE 1" in result
 
-    async def _lock_balance(self, user_id: UUID, asset: str, amount: Decimal) -> bool:
+    async def _lock_balance(self, user_id: str, asset: str, amount: Decimal) -> bool:
         """Lock balance for a pending order"""
         result = await self.db.execute(
             """
@@ -180,7 +184,7 @@ class CLOBEngine(BaseEngine):
             SET available = available - $3,
                 locked = locked + $3,
                 updated_at = NOW()
-            WHERE user_id = $1 AND asset = $2
+            WHERE user_id = $1 AND currency = $2
             AND available >= $3
             """,
             user_id,
@@ -189,7 +193,7 @@ class CLOBEngine(BaseEngine):
         )
         return "UPDATE 1" in result
 
-    async def _unlock_balance(self, user_id: UUID, asset: str, amount: Decimal) -> bool:
+    async def _unlock_balance(self, user_id: str, asset: str, amount: Decimal) -> bool:
         """Unlock balance when order is cancelled or filled"""
         result = await self.db.execute(
             """
@@ -197,7 +201,7 @@ class CLOBEngine(BaseEngine):
             SET available = available + $3,
                 locked = locked - $3,
                 updated_at = NOW()
-            WHERE user_id = $1 AND asset = $2
+            WHERE user_id = $1 AND currency = $2
             AND locked >= $3
             """,
             user_id,
@@ -208,8 +212,8 @@ class CLOBEngine(BaseEngine):
 
     async def _settle_trade(
         self,
-        buyer_id: UUID,
-        seller_id: UUID,
+        buyer_id: str,
+        seller_id: str,
         price: Decimal,
         quantity: Decimal,
         buyer_fee: Decimal,
@@ -229,7 +233,7 @@ class CLOBEngine(BaseEngine):
             UPDATE user_balances
             SET locked = locked - $3,
                 updated_at = NOW()
-            WHERE user_id = $1 AND asset = $2
+            WHERE user_id = $1 AND currency = $2
             AND locked >= $3
             """,
             buyer_id,
@@ -249,7 +253,7 @@ class CLOBEngine(BaseEngine):
             UPDATE user_balances
             SET locked = locked - $3,
                 updated_at = NOW()
-            WHERE user_id = $1 AND asset = $2
+            WHERE user_id = $1 AND currency = $2
             AND locked >= $3
             """,
             seller_id,
@@ -274,7 +278,7 @@ class CLOBEngine(BaseEngine):
 
     async def execute_trade(
         self,
-        user_id: UUID,
+        user_id: str,
         side: OrderSide,
         quantity: Optional[Decimal] = None,
         quote_amount: Optional[Decimal] = None,
@@ -399,7 +403,7 @@ class CLOBEngine(BaseEngine):
             new_status = (
                 OrderStatus.FILLED if fill_quantity >= order_remaining else OrderStatus.PARTIAL
             )
-            await self._update_order(order["id"], fill_quantity, new_status)
+            await self._update_order(order["order_id"], fill_quantity, new_status)
 
             # Record trades for both parties
             # Taker trade (incoming order)
@@ -412,7 +416,7 @@ class CLOBEngine(BaseEngine):
                 fee_amount=taker_fee,
                 fee_asset=self.quote_asset,
                 status=TradeStatus.COMPLETED,
-                engine_data={"is_taker": True, "matched_order_id": str(order["id"])},
+                engine_data={"is_taker": True, "matched_order_id": order["order_id"]},
                 counterparty_user_id=order["user_id"],
             )
 
@@ -426,7 +430,7 @@ class CLOBEngine(BaseEngine):
                 fee_amount=maker_fee,
                 fee_asset=self.quote_asset,
                 status=TradeStatus.COMPLETED,
-                engine_data={"is_taker": False, "matched_order_id": str(order["id"])},
+                engine_data={"is_taker": False, "matched_order_id": order["order_id"]},
                 counterparty_user_id=user_id,
             )
 
@@ -436,7 +440,7 @@ class CLOBEngine(BaseEngine):
                     "quantity": float(fill_quantity),
                     "quote_amount": float(fill_quote),
                     "fee": float(taker_fee),
-                    "matched_order_id": str(order["id"]),
+                    "matched_order_id": order["order_id"],
                 }
             )
 
@@ -598,11 +602,11 @@ class CLOBEngine(BaseEngine):
         last_trade = await self.db.read_one(
             """
             SELECT price, quantity, created_at FROM trades
-            WHERE symbol_config_id = $1
+            WHERE symbol_id = $1
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            self.symbol_config["id"],
+            self.symbol_config["symbol_id"],
         )
 
         return {
@@ -617,13 +621,13 @@ class CLOBEngine(BaseEngine):
             "asks": order_book["asks"],
         }
 
-    async def cancel_order(self, user_id: UUID, order_id: UUID) -> Dict[str, Any]:
+    async def cancel_order(self, user_id: str, order_id: str) -> Dict[str, Any]:
         """Cancel an open order"""
         # Get order details
         order = await self.db.read_one(
             f"""
             SELECT * FROM orderbook_orders
-            WHERE id = $1 AND user_id = $2
+            WHERE order_id = $1 AND user_id = $2
             AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
             """,
             order_id,
@@ -651,7 +655,7 @@ class CLOBEngine(BaseEngine):
             SET status = $2,
                 cancelled_at = NOW(),
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE order_id = $1
             """,
             order_id,
             OrderStatus.CANCELLED.value,
@@ -659,48 +663,7 @@ class CLOBEngine(BaseEngine):
 
         return {
             "success": True,
-            "order_id": str(order_id),
+            "order_id": order_id,
             "unlocked_amount": float(unlock_amount),
             "unlocked_asset": unlock_asset,
         }
-
-    async def get_user_orders(
-        self,
-        user_id: UUID,
-        status: Optional[List[OrderStatus]] = None,
-        limit: int = 50,
-    ) -> List[Dict[str, Any]]:
-        """Get user's orders"""
-        if status:
-            status_values = [s.value for s in status]
-            orders = await self.db.read(
-                """
-                SELECT o.*, sc.symbol FROM orderbook_orders o
-                JOIN symbol_configs sc ON o.symbol_config_id = sc.id
-                WHERE o.user_id = $1
-                AND o.symbol_config_id = $2
-                AND o.status = ANY($3)
-                ORDER BY o.created_at DESC
-                LIMIT $4
-                """,
-                user_id,
-                self.symbol_config["id"],
-                status_values,
-                limit,
-            )
-        else:
-            orders = await self.db.read(
-                """
-                SELECT o.*, sc.symbol FROM orderbook_orders o
-                JOIN symbol_configs sc ON o.symbol_config_id = sc.id
-                WHERE o.user_id = $1
-                AND o.symbol_config_id = $2
-                ORDER BY o.created_at DESC
-                LIMIT $3
-                """,
-                user_id,
-                self.symbol_config["id"],
-                limit,
-            )
-
-        return orders

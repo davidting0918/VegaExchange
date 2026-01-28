@@ -9,13 +9,15 @@ asyncpg>=0.29.0
 
 # Data validation
 pydantic>=2.5.0
+email-validator>=2.0.0
 
 # Environment
 python-dotenv>=1.0.0
 
-# Authentication (for Google OAuth)
+# Authentication (for Google OAuth and email/password)
 python-jose[cryptography]>=3.3.0
 httpx>=0.26.0
+passlib[bcrypt]>=1.7.4
 
 # Utilities
 python-multipart>=0.0.6

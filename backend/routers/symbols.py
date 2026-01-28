@@ -7,18 +7,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend.core.dependencies import get_router
 from backend.core.db_manager import get_db
+from backend.core.id_generator import generate_pool_id, generate_symbol_id
 from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType, SymbolStatus
 from backend.models.requests import CreateSymbolRequest
 from backend.models.responses import APIResponse, SymbolConfigResponse
 
 router = APIRouter(prefix="/api/symbols", tags=["symbols"])
-
-
-def get_router() -> EngineRouter:
-    """Dependency to get engine router"""
-    return EngineRouter(get_db())
 
 
 @router.get("", response_model=APIResponse)
@@ -63,39 +60,28 @@ async def create_symbol(request: CreateSymbolRequest, router: EngineRouter = Dep
     if existing:
         raise HTTPException(status_code=400, detail=f"Symbol '{request.symbol}' already exists")
 
-    # Create symbol config
-    symbol_data = {
-        "symbol": request.symbol,
-        "base_asset": request.base_asset,
-        "quote_asset": request.quote_asset,
-        "engine_type": request.engine_type.value,
-        "status": SymbolStatus.ACTIVE.value,
-        "engine_params": request.engine_params,
-        "min_trade_amount": request.min_trade_amount,
-        "max_trade_amount": request.max_trade_amount,
-        "price_precision": request.price_precision,
-        "quantity_precision": request.quantity_precision,
-    }
-
+    # Create symbol config (SERIAL id is auto-generated)
     result = await db.execute_returning(
         """
         INSERT INTO symbol_configs (
-            symbol, base_asset, quote_asset, engine_type, status,
+            symbol, market, base, quote, settle, engine_type, is_active,
             engine_params, min_trade_amount, max_trade_amount,
             price_precision, quantity_precision
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
         """,
-        symbol_data["symbol"],
-        symbol_data["base_asset"],
-        symbol_data["quote_asset"],
-        symbol_data["engine_type"],
-        symbol_data["status"],
-        symbol_data["engine_params"],
-        symbol_data["min_trade_amount"],
-        symbol_data["max_trade_amount"],
-        symbol_data["price_precision"],
-        symbol_data["quantity_precision"],
+        request.symbol,
+        "spot",  # Default market type
+        request.base_asset,
+        request.quote_asset,
+        request.quote_asset,  # Default settle to quote asset
+        request.engine_type.value,
+        True,  # is_active
+        request.engine_params,
+        request.min_trade_amount,
+        request.max_trade_amount,
+        request.price_precision,
+        request.quantity_precision,
     )
 
     # Initialize engine-specific data
@@ -105,14 +91,18 @@ async def create_symbol(request: CreateSymbolRequest, router: EngineRouter = Dep
         initial_quote = request.engine_params.get("initial_reserve_quote", 0)
         fee_rate = request.engine_params.get("fee_rate", 0.003)
 
+        # Generate pool ID
+        pool_id = generate_pool_id()
+        
         await db.execute(
             """
             INSERT INTO amm_pools (
-                symbol_config_id, reserve_base, reserve_quote,
+                pool_id, symbol_id, reserve_base, reserve_quote,
                 k_value, fee_rate
-            ) VALUES ($1, $2, $3, $4, $5)
+            ) VALUES ($1, $2, $3, $4, $5, $6)
             """,
-            result["id"],
+            pool_id,
+            result["symbol_id"],
             initial_base,
             initial_quote,
             initial_base * initial_quote,
@@ -138,14 +128,17 @@ async def update_symbol_status(
     """
     db = get_db()
 
+    # Convert SymbolStatus to boolean
+    is_active = status == SymbolStatus.ACTIVE
+    
     result = await db.execute(
         """
         UPDATE symbol_configs
-        SET status = $2, updated_at = NOW()
+        SET is_active = $2, updated_at = NOW()
         WHERE symbol = $1
         """,
         symbol.upper(),
-        status.value,
+        is_active,
     )
 
     if "UPDATE 0" in result:
@@ -153,7 +146,7 @@ async def update_symbol_status(
 
     router.invalidate_cache(symbol.upper())
 
-    return APIResponse(success=True, data={"symbol": symbol.upper(), "status": status.value})
+    return APIResponse(success=True, data={"symbol": symbol.upper(), "is_active": is_active})
 
 
 @router.delete("/{symbol}", response_model=APIResponse)
@@ -168,11 +161,10 @@ async def delete_symbol(symbol: str, router: EngineRouter = Depends(get_router))
     result = await db.execute(
         """
         UPDATE symbol_configs
-        SET status = $2, updated_at = NOW()
+        SET is_active = FALSE, updated_at = NOW()
         WHERE symbol = $1
         """,
         symbol.upper(),
-        SymbolStatus.MAINTENANCE.value,
     )
 
     if "UPDATE 0" in result:

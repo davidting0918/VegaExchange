@@ -6,8 +6,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
+from backend.core.id_generator import generate_trade_id
 from backend.models.enums import EngineType, OrderSide, TradeStatus
 
 
@@ -16,7 +16,7 @@ class TradeResult:
     """Result of a trade execution"""
 
     success: bool
-    trade_id: Optional[UUID] = None
+    trade_id: Optional[str] = None
     symbol: str = ""
     side: OrderSide = OrderSide.BUY
     engine_type: EngineType = EngineType.AMM
@@ -30,7 +30,7 @@ class TradeResult:
     error_message: Optional[str] = None
 
     # For CLOB: order information
-    order_id: Optional[UUID] = None
+    order_id: Optional[str] = None
     fills: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -70,8 +70,8 @@ class BaseEngine(ABC):
         self.db = db_client
         self.symbol_config = symbol_config
         self.symbol = symbol_config["symbol"]
-        self.base_asset = symbol_config["base_asset"]
-        self.quote_asset = symbol_config["quote_asset"]
+        self.base_asset = symbol_config["base"]
+        self.quote_asset = symbol_config["quote"]
         self.engine_params = symbol_config.get("engine_params", {})
 
     @property
@@ -83,7 +83,7 @@ class BaseEngine(ABC):
     @abstractmethod
     async def execute_trade(
         self,
-        user_id: UUID,
+        user_id: str,
         side: OrderSide,
         quantity: Optional[Decimal] = None,
         quote_amount: Optional[Decimal] = None,
@@ -140,7 +140,7 @@ class BaseEngine(ABC):
 
     async def validate_balance(
         self,
-        user_id: UUID,
+        user_id: str,
         asset: str,
         required_amount: Decimal,
     ) -> bool:
@@ -158,7 +158,7 @@ class BaseEngine(ABC):
         balance = await self.db.read_one(
             """
             SELECT available FROM user_balances
-            WHERE user_id = $1 AND asset = $2
+            WHERE user_id = $1 AND currency = $2
             """,
             user_id,
             asset,
@@ -171,7 +171,7 @@ class BaseEngine(ABC):
 
     async def update_balance(
         self,
-        user_id: UUID,
+        user_id: str,
         asset: str,
         available_delta: Decimal,
         locked_delta: Decimal = Decimal("0"),
@@ -194,7 +194,7 @@ class BaseEngine(ABC):
             SET available = available + $3,
                 locked = locked + $4,
                 updated_at = NOW()
-            WHERE user_id = $1 AND asset = $2
+            WHERE user_id = $1 AND currency = $2
             AND available + $3 >= 0
             AND locked + $4 >= 0
             """,
@@ -209,7 +209,7 @@ class BaseEngine(ABC):
 
     async def record_trade(
         self,
-        user_id: UUID,
+        user_id: str,
         side: OrderSide,
         price: Decimal,
         quantity: Decimal,
@@ -218,55 +218,42 @@ class BaseEngine(ABC):
         fee_asset: str,
         status: TradeStatus = TradeStatus.COMPLETED,
         engine_data: Optional[Dict[str, Any]] = None,
-        counterparty_user_id: Optional[UUID] = None,
-    ) -> UUID:
+        counterparty_user_id: Optional[str] = None,
+    ) -> str:
         """
         Record a trade in the database.
 
         Returns:
             Trade ID
         """
-        trade_data = {
-            "symbol_config_id": self.symbol_config["id"],
-            "user_id": user_id,
-            "side": side.value,
-            "engine_type": self.engine_type.value,
-            "price": price,
-            "quantity": quantity,
-            "quote_amount": quote_amount,
-            "fee_amount": fee_amount,
-            "fee_asset": fee_asset,
-            "status": status.value,
-            "engine_data": engine_data or {},
-        }
-
-        if counterparty_user_id:
-            trade_data["counterparty_user_id"] = counterparty_user_id
+        # Generate trade ID
+        trade_id = generate_trade_id()
 
         result = await self.db.execute_returning(
             """
             INSERT INTO trades (
-                symbol_config_id, user_id, side, engine_type,
+                trade_id, symbol_id, user_id, side, engine_type,
                 price, quantity, quote_amount,
                 fee_amount, fee_asset, status, engine_data,
                 counterparty_user_id
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
             )
-            RETURNING id
+            RETURNING trade_id
             """,
-            trade_data["symbol_config_id"],
-            trade_data["user_id"],
-            trade_data["side"],
-            trade_data["engine_type"],
-            trade_data["price"],
-            trade_data["quantity"],
-            trade_data["quote_amount"],
-            trade_data["fee_amount"],
-            trade_data["fee_asset"],
-            trade_data["status"],
-            trade_data["engine_data"],
+            trade_id,
+            self.symbol_config["symbol_id"],
+            user_id,
+            side.value,
+            self.engine_type.value,
+            price,
+            quantity,
+            quote_amount,
+            fee_amount,
+            fee_asset,
+            status.value,
+            engine_data or {},
             counterparty_user_id,
         )
 
-        return result["id"]
+        return result["trade_id"]

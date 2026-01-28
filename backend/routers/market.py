@@ -7,17 +7,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from backend.core.dependencies import get_router
 from backend.core.db_manager import get_db
 from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType
 from backend.models.responses import APIResponse
 
 router = APIRouter(prefix="/api/market", tags=["market"])
-
-
-def get_router() -> EngineRouter:
-    """Dependency to get engine router"""
-    return EngineRouter(get_db())
 
 
 @router.get("/{symbol}", response_model=APIResponse)
@@ -130,12 +126,12 @@ async def get_recent_trades(
 
     trades = await db.read(
         """
-        SELECT t.id, t.side, t.price, t.quantity, t.quote_amount,
+        SELECT t.trade_id, t.side, t.price, t.quantity, t.quote_amount,
                t.engine_type, t.created_at
         FROM trades t
-        JOIN symbol_configs sc ON t.symbol_config_id = sc.id
+        JOIN symbol_configs sc USING (symbol_id)
         WHERE sc.symbol = $1
-        AND t.status = 'completed'
+        AND t.status = 1
         ORDER BY t.created_at DESC
         LIMIT $2
         """,
@@ -168,8 +164,8 @@ async def get_all_markets(router: EngineRouter = Depends(get_router)):
         markets.append(
             {
                 "symbol": symbol_config["symbol"],
-                "base_asset": symbol_config["base_asset"],
-                "quote_asset": symbol_config["quote_asset"],
+                "base_asset": symbol_config["base"],
+                "quote_asset": symbol_config["quote"],
                 "engine_type": symbol_config["engine_type"],
                 "current_price": market_data.get("current_price", 0),
             }

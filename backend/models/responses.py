@@ -5,29 +5,28 @@ Response models for VegaExchange API
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType, SymbolStatus, TradeStatus
+from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType, TradeStatus
 
 
 class UserResponse(BaseModel):
     """User information response"""
 
-    id: UUID
+    user_id: str
     email: str
-    display_name: Optional[str] = None
-    avatar_url: Optional[str] = None
+    user_name: Optional[str] = None
+    photo_url: Optional[str] = None
     is_admin: bool = False
     created_at: datetime
     last_login_at: datetime
 
 
 class BalanceResponse(BaseModel):
-    """User balance for a single asset"""
+    """User balance for a single currency"""
 
-    asset: str
+    currency: str
     available: Decimal
     locked: Decimal
     total: Decimal = Field(description="available + locked")
@@ -36,12 +35,12 @@ class BalanceResponse(BaseModel):
 class SymbolConfigResponse(BaseModel):
     """Symbol configuration response"""
 
-    id: UUID
+    symbol_id: int
     symbol: str
-    base_asset: str
-    quote_asset: str
+    base: str
+    quote: str
     engine_type: EngineType
-    status: SymbolStatus
+    is_active: bool
     engine_params: Dict[str, Any]
     min_trade_amount: Decimal
     max_trade_amount: Decimal
@@ -53,7 +52,7 @@ class SymbolConfigResponse(BaseModel):
 class AMMPoolResponse(BaseModel):
     """AMM pool information"""
 
-    id: UUID
+    pool_id: str
     symbol: str
     reserve_base: Decimal
     reserve_quote: Decimal
@@ -69,9 +68,9 @@ class AMMPoolResponse(BaseModel):
 class OrderResponse(BaseModel):
     """Order information response"""
 
-    id: UUID
+    order_id: str
     symbol: str
-    user_id: UUID
+    user_id: str
     side: OrderSide
     order_type: OrderType
     price: Optional[Decimal]
@@ -105,9 +104,9 @@ class OrderBookResponse(BaseModel):
 class TradeResponse(BaseModel):
     """Trade execution response"""
 
-    id: UUID
+    trade_id: str
     symbol: str
-    user_id: UUID
+    user_id: str
     side: OrderSide
     engine_type: EngineType
     price: Decimal

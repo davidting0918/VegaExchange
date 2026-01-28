@@ -5,7 +5,7 @@ Request models for VegaExchange API
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, EmailStr
 
 from backend.models.enums import EngineType, OrderSide, OrderType
 
@@ -113,3 +113,18 @@ class RemoveLiquidityRequest(BaseModel):
     @classmethod
     def uppercase_symbol(cls, v: str) -> str:
         return v.upper()
+
+
+class EmailRegisterRequest(BaseModel):
+    """Request to register a new user with email/password"""
+
+    email: EmailStr = Field(..., description="User email address")
+    password: str = Field(..., min_length=8, description="Password (minimum 8 characters)")
+    user_name: Optional[str] = Field(None, description="Display name (optional, defaults to email username)")
+
+
+class EmailLoginRequest(BaseModel):
+    """Request to login with email/password"""
+
+    email: EmailStr = Field(..., description="User email address")
+    password: str = Field(..., description="User password")

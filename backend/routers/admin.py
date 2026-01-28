@@ -10,17 +10,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from backend.core.auth import get_current_user
+from backend.core.balance_utils import create_initial_balances
+from backend.core.dependencies import get_router
 from backend.core.db_manager import get_db
+from backend.core.id_generator import generate_order_id, generate_pool_id
 from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType, SymbolStatus
 from backend.models.responses import APIResponse
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
-
-
-def get_router() -> EngineRouter:
-    """Dependency to get engine router"""
-    return EngineRouter(get_db())
 
 
 @router.post("/init-pool", response_model=APIResponse)
@@ -51,24 +50,45 @@ async def initialize_amm_pool(
 
     # Update or create pool
     k_value = reserve_base * reserve_quote
-
-    result = await db.execute_returning(
-        """
-        INSERT INTO amm_pools (symbol_config_id, reserve_base, reserve_quote, k_value)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (symbol_config_id)
-        DO UPDATE SET
-            reserve_base = $2,
-            reserve_quote = $3,
-            k_value = $4,
-            updated_at = NOW()
-        RETURNING *
-        """,
-        config["id"],
-        reserve_base,
-        reserve_quote,
-        k_value,
+    
+    # Check if pool already exists
+    existing_pool = await db.read_one(
+        "SELECT pool_id FROM amm_pools WHERE symbol_id = $1",
+        config["symbol_id"],
     )
+    
+    if existing_pool:
+        # Update existing pool
+        result = await db.execute_returning(
+            """
+            UPDATE amm_pools
+            SET reserve_base = $2,
+                reserve_quote = $3,
+                k_value = $4,
+                updated_at = NOW()
+            WHERE symbol_id = $1
+            RETURNING *
+            """,
+            config["symbol_id"],
+            reserve_base,
+            reserve_quote,
+            k_value,
+        )
+    else:
+        # Create new pool with generated ID
+        pool_id = generate_pool_id()
+        result = await db.execute_returning(
+            """
+            INSERT INTO amm_pools (pool_id, symbol_id, reserve_base, reserve_quote, k_value)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *
+            """,
+            pool_id,
+            config["symbol_id"],
+            reserve_base,
+            reserve_quote,
+            k_value,
+        )
 
     router.invalidate_cache(symbol.upper())
 
@@ -91,14 +111,18 @@ async def seed_orderbook(
     spread_pct: Decimal = Query(default=Decimal("0.5"), description="Spread percentage"),
     levels: int = Query(default=10, description="Number of price levels"),
     quantity_per_level: Decimal = Query(default=Decimal("10"), description="Quantity per level"),
-    admin_user_id: UUID = Query(..., description="Admin user ID to own the orders"),
+    admin_user_id: str = Query(..., description="Admin user ID to own the orders"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Seed an order book with initial orders.
 
     Creates buy and sell orders around a mid price for testing.
-    Admin only.
+    Admin only - requires authentication.
     """
+    # Verify admin status
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
     db = get_db()
 
     # Get symbol config
@@ -122,15 +146,17 @@ async def seed_orderbook(
     # Create buy orders (below mid price)
     for i in range(levels):
         price = mid_price - spread / 2 - (tick * i)
+        order_id = generate_order_id()
 
         await db.execute(
             """
             INSERT INTO orderbook_orders (
-                symbol_config_id, user_id, side, order_type,
+                order_id, symbol_id, user_id, side, order_type,
                 price, quantity, remaining_quantity, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
             """,
-            config["id"],
+            order_id,
+            config["symbol_id"],
             admin_user_id,
             OrderSide.BUY.value,
             OrderType.LIMIT.value,
@@ -143,15 +169,17 @@ async def seed_orderbook(
     # Create sell orders (above mid price)
     for i in range(levels):
         price = mid_price + spread / 2 + (tick * i)
+        order_id = generate_order_id()
 
         await db.execute(
             """
             INSERT INTO orderbook_orders (
-                symbol_config_id, user_id, side, order_type,
+                order_id, symbol_id, user_id, side, order_type,
                 price, quantity, remaining_quantity, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
             """,
-            config["id"],
+            order_id,
+            config["symbol_id"],
             admin_user_id,
             OrderSide.SELL.value,
             OrderType.LIMIT.value,
@@ -175,20 +203,25 @@ async def seed_orderbook(
 
 @router.post("/credit-balance", response_model=APIResponse)
 async def credit_user_balance(
-    user_id: UUID = Query(..., description="User ID"),
+    user_id: str = Query(..., description="User ID to credit"),
     asset: str = Query(..., description="Asset to credit"),
     amount: Decimal = Query(..., description="Amount to credit"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Credit a user's balance.
 
     Admin only - for testing or customer support.
+    Requires authentication and admin privileges.
     """
+    # Verify admin status
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
     db = get_db()
 
     # Check if balance exists
     existing = await db.read_one(
-        "SELECT id FROM user_balances WHERE user_id = $1 AND asset = $2",
+        "SELECT id FROM user_balances WHERE user_id = $1 AND currency = $2",
         user_id,
         asset.upper(),
     )
@@ -198,19 +231,21 @@ async def credit_user_balance(
             """
             UPDATE user_balances
             SET available = available + $3, updated_at = NOW()
-            WHERE user_id = $1 AND asset = $2
+            WHERE user_id = $1 AND currency = $2
             """,
             user_id,
             asset.upper(),
             amount,
         )
     else:
+        # Use balance_utils for consistency
         await db.execute(
             """
-            INSERT INTO user_balances (user_id, asset, available, locked)
-            VALUES ($1, $2, $3, 0)
+            INSERT INTO user_balances (user_id, account_type, currency, available, locked)
+            VALUES ($1, $2, $3, $4, 0)
             """,
             user_id,
+            "spot",  # Default account type
             asset.upper(),
             amount,
         )
@@ -218,9 +253,9 @@ async def credit_user_balance(
     # Get updated balance
     balance = await db.read_one(
         """
-        SELECT asset, available, locked, (available + locked) as total
+        SELECT currency, available, locked, (available + locked) as total
         FROM user_balances
-        WHERE user_id = $1 AND asset = $2
+        WHERE user_id = $1 AND currency = $2
         """,
         user_id,
         asset.upper(),
@@ -297,9 +332,9 @@ async def clear_all_orders(
         f"""
         UPDATE orderbook_orders
         SET status = {OrderStatus.CANCELLED}, cancelled_at = NOW()
-        WHERE symbol_config_id = $1 AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
+        WHERE symbol_id = $1 AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
         """,
-        config["id"],
+        config["symbol_id"],
     )
 
     # Extract count from result
