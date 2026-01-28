@@ -8,7 +8,6 @@ from decimal import Decimal
 from math import sqrt
 from typing import Any, Dict, Optional
 
-from backend.core.id_generator import generate_lp_position_id
 from backend.engines.base_engine import BaseEngine, QuoteResult, TradeResult
 from backend.models.enums import EngineType, OrderSide, TradeStatus
 

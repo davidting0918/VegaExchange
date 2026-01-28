@@ -119,7 +119,7 @@ class EmailRegisterRequest(BaseModel):
     """Request to register a new user with email/password"""
 
     email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., min_length=8, description="Password (minimum 8 characters)")
+    password: str = Field(..., min_length=3, description="Password (minimum 3 characters)")
     user_name: Optional[str] = Field(None, description="Display name (optional, defaults to email username)")
 
 

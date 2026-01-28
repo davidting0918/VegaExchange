@@ -22,7 +22,7 @@ from backend.models.responses import APIResponse
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
-@router.post("/init-pool", response_model=APIResponse)
+@router.post("/init_pool", response_model=APIResponse)
 async def initialize_amm_pool(
     symbol: str = Query(..., description="Symbol to initialize"),
     reserve_base: Decimal = Query(..., description="Initial base asset reserve"),
@@ -104,7 +104,7 @@ async def initialize_amm_pool(
     )
 
 
-@router.post("/seed-orderbook", response_model=APIResponse)
+@router.post("/seed_orderbook", response_model=APIResponse)
 async def seed_orderbook(
     symbol: str = Query(..., description="Symbol to seed"),
     mid_price: Decimal = Query(..., description="Middle price"),
@@ -201,7 +201,7 @@ async def seed_orderbook(
     )
 
 
-@router.post("/credit-balance", response_model=APIResponse)
+@router.post("/credit_balance", response_model=APIResponse)
 async def credit_user_balance(
     user_id: str = Query(..., description="User ID to credit"),
     asset: str = Query(..., description="Asset to credit"),
@@ -306,7 +306,7 @@ async def get_system_stats():
     )
 
 
-@router.delete("/clear-orders", response_model=APIResponse)
+@router.post("/clear_orders", response_model=APIResponse)
 async def clear_all_orders(
     symbol: str = Query(..., description="Symbol to clear orders for"),
     router: EngineRouter = Depends(get_router),

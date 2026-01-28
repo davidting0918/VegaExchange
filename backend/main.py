@@ -8,6 +8,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse
+from scalar_fastapi import get_scalar_api_reference
 
 from backend.core.db_manager import close_database, init_database
 from backend.core.environment import env_config
@@ -35,7 +38,7 @@ app = FastAPI(
     title="VegaExchange API",
     description="""
     Trading Simulation Laboratory - A platform for experimenting with
-    different market mechanisms (AMM, CLOB, Hybrid, Batch Auction).
+    different market mechanisms (AMM, CLOB).
 
     ## Features
     - Per-symbol engine assignment
@@ -46,8 +49,11 @@ app = FastAPI(
     ## Engine Types
     - **AMM**: Automated Market Maker with constant product formula
     - **CLOB**: Central Limit Order Book with price-time priority
-    - **Hybrid**: Combines AMM and CLOB (coming soon)
-    - **Batch Auction**: Periodic batch matching (coming soon)
+
+    ## API Documentation
+    - **Scalar**: /scalar (recommended)
+    - **Swagger**: /docs
+    - **ReDoc**: /redoc
     """,
     version="1.0.0",
     lifespan=lifespan,
@@ -72,6 +78,15 @@ app.include_router(users_router)
 app.include_router(admin_router)
 
 
+@app.get("/scalar", include_in_schema=False)
+async def scalar_html():
+    """Scalar API documentation"""
+    return get_scalar_api_reference(
+        openapi_url=app.openapi_url,
+        title=app.title,
+    )
+
+
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
@@ -79,8 +94,11 @@ async def root():
         "name": "VegaExchange API",
         "version": "1.0.0",
         "environment": env_config.environment.value,
-        "docs": "/docs",
-        "redoc": "/redoc",
+        "docs": {
+            "scalar": "/scalar",
+            "swagger": "/docs",
+            "redoc": "/redoc",
+        },
     }
 
 

@@ -22,3 +22,6 @@ passlib[bcrypt]>=1.7.4
 # Utilities
 python-multipart>=0.0.6
 orjson>=3.9.0
+
+# API Documentation
+scalar-fastapi>=1.0.0

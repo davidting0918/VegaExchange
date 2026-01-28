@@ -234,7 +234,7 @@ async def register_user_email(request: EmailRegisterRequest):
     Register a new user with email/password.
 
     Creates user account with default initial balances.
-    Password must be at least 8 characters long.
+    Password must be at least 3 characters long.
     """
     db = get_db()
 

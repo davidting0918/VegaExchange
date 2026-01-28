@@ -158,9 +158,9 @@ async def place_order(
     )
 
 
-@router.delete("/order/{order_id}", response_model=APIResponse)
+@router.post("/order/cancel", response_model=APIResponse)
 async def cancel_order(
-    order_id: str,
+    order_id: str = Query(..., description="Order ID to cancel"),
     symbol: str = Query(..., description="Symbol of the order"),
     user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),

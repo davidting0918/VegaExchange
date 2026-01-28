@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from backend.core.dependencies import get_router
 from backend.core.db_manager import get_db
-from backend.core.id_generator import generate_pool_id, generate_symbol_id
+from backend.core.id_generator import generate_pool_id
 from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType, SymbolStatus
 from backend.models.requests import CreateSymbolRequest
@@ -115,7 +115,7 @@ async def create_symbol(request: CreateSymbolRequest, router: EngineRouter = Dep
     return APIResponse(success=True, data=result)
 
 
-@router.put("/{symbol}/status", response_model=APIResponse)
+@router.post("/{symbol}/update_status", response_model=APIResponse)
 async def update_symbol_status(
     symbol: str,
     status: SymbolStatus,
@@ -149,7 +149,7 @@ async def update_symbol_status(
     return APIResponse(success=True, data={"symbol": symbol.upper(), "is_active": is_active})
 
 
-@router.delete("/{symbol}", response_model=APIResponse)
+@router.post("/{symbol}/delete", response_model=APIResponse)
 async def delete_symbol(symbol: str, router: EngineRouter = Depends(get_router)):
     """
     Delete a symbol (soft delete by setting status to maintenance).
