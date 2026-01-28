@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS access_tokens (
     user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     access_token TEXT NOT NULL UNIQUE,
     refresh_token TEXT UNIQUE,
-    is_revoked BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     expired_at TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -64,7 +64,7 @@ CREATE INDEX idx_access_tokens_user_id ON access_tokens(user_id);
 CREATE INDEX idx_access_tokens_access_token ON access_tokens(access_token);
 CREATE INDEX idx_access_tokens_refresh_token ON access_tokens(refresh_token) WHERE refresh_token IS NOT NULL;
 CREATE INDEX idx_access_tokens_expired_at ON access_tokens(expired_at);
-CREATE INDEX idx_access_tokens_is_revoked ON access_tokens(is_revoked);
+CREATE INDEX idx_access_tokens_is_active ON access_tokens(is_active);
 
 CREATE TRIGGER update_access_tokens_updated_at
     BEFORE UPDATE ON access_tokens
