@@ -14,7 +14,7 @@ from scalar_fastapi import get_scalar_api_reference
 
 from backend.core.db_manager import close_database, init_database
 from backend.core.environment import env_config
-from backend.routers import admin_router, market_router, symbols_router, trading_router, users_router
+from backend.routers import auth_router, market_router, symbols_router, trading_router, users_router
 
 
 @asynccontextmanager
@@ -71,11 +71,56 @@ app.add_middleware(
 )
 
 # Register routers
+app.include_router(auth_router)
 app.include_router(symbols_router)
 app.include_router(trading_router)
 app.include_router(market_router)
 app.include_router(users_router)
-app.include_router(admin_router)
+
+
+def custom_openapi():
+    """
+    Customize OpenAPI schema to include security schemes.
+    This enables authentication in Swagger UI and Scalar documentation.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    from fastapi.openapi.utils import get_openapi
+    
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    
+    # Add security schemes
+    openapi_schema["components"]["securitySchemes"] = {
+        "Bearer": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "JWT token authentication. Use 'Bearer <token>' format in Authorization header.",
+        },
+        "OAuth2PasswordBearer": {
+            "type": "oauth2",
+            "flows": {
+                "password": {
+                    "tokenUrl": "/api/auth/token",
+                    "scopes": {},
+                }
+            },
+            "description": "OAuth2 password grant flow. Use this for Swagger UI authentication.",
+        },
+    }
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+# Override the default openapi function
+app.openapi = custom_openapi
 
 
 @app.get("/scalar", include_in_schema=False)

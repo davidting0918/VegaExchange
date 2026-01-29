@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) UNIQUE NOT NULL,
     photo_url TEXT,
     hashed_pw TEXT,
+    source VARCHAR(50),  -- Registration source (from api_keys.source)
     is_active BOOLEAN DEFAULT TRUE,
     is_admin BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -42,6 +43,33 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE UNIQUE INDEX idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
 CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_source ON users(source) WHERE source IS NOT NULL;
+
+-- =====================================================
+-- API KEYS TABLE
+-- =====================================================
+CREATE TABLE IF NOT EXISTS api_keys (
+    api_key_id SERIAL PRIMARY KEY,
+    api_key TEXT NOT NULL UNIQUE,  -- Hashed API key
+    api_secret TEXT,  -- Hashed API secret (optional, for backend use)
+    name VARCHAR(255) NOT NULL,  -- Key name/description
+    source VARCHAR(50) NOT NULL,  -- Source identifier (e.g., "frontend", "admin", "mobile")
+    is_active BOOLEAN DEFAULT TRUE,
+    rate_limit INTEGER DEFAULT 60,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by TEXT REFERENCES users(user_id) ON DELETE SET NULL,
+    
+    CONSTRAINT positive_rate_limit CHECK (rate_limit > 0)
+);
+
+CREATE INDEX idx_api_keys_api_key ON api_keys(api_key);
+CREATE INDEX idx_api_keys_source ON api_keys(source);
+CREATE INDEX idx_api_keys_is_active ON api_keys(is_active);
+
+CREATE TRIGGER update_api_keys_updated_at
+    BEFORE UPDATE ON api_keys
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =====================================================
 -- ACCESS TOKENS TABLE

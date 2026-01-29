@@ -3,30 +3,44 @@ Authentication dependencies for FastAPI routes
 
 Provides get_current_user dependency that validates JWT tokens
 and extracts user information from the token.
+
+Supports both HTTPBearer (JWT tokens) and OAuth2PasswordBearer (OAuth2 flow)
+for authentication.
 """
 
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer
 
 from backend.core.db_manager import get_db
 from backend.core.jwt import verify_token
 
-# HTTP Bearer token security scheme
-security = HTTPBearer()
+# HTTP Bearer token security scheme for JWT tokens
+# Enhanced with OpenAPI metadata for better documentation
+security = HTTPBearer(
+    scheme_name="Bearer",
+    description="JWT token authentication. Use 'Bearer <token>' format in Authorization header.",
+    auto_error=False,
+)
+
+# OAuth2 Password Bearer for OAuth2 password grant flow
+# Used by Swagger UI and other OAuth2-compliant clients
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="/api/auth/token",
+    scheme_name="OAuth2PasswordBearer",
+    description="OAuth2 password grant flow. Use this for Swagger UI authentication.",
+)
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> dict:
+async def _validate_token_and_get_user(token: str) -> dict:
     """
-    FastAPI dependency to get current authenticated user from JWT token.
+    Internal helper function to validate token and get user.
     
-    Validates the JWT token from Authorization header and returns user data.
+    Shared logic for both HTTPBearer and OAuth2PasswordBearer authentication.
     
     Args:
-        credentials: HTTP Bearer token credentials from Authorization header
+        token: JWT token string
         
     Returns:
         Dictionary containing user information
@@ -34,8 +48,6 @@ async def get_current_user(
     Raises:
         HTTPException: If token is invalid, expired, or user not found
     """
-    token = credentials.credentials
-    
     # Verify token
     payload = verify_token(token, token_type="access")
     if payload is None:
@@ -92,6 +104,58 @@ async def get_current_user(
         )
     
     return user
+
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> dict:
+    """
+    FastAPI dependency to get current authenticated user from JWT token.
+    
+    Validates the JWT token from Authorization header and returns user data.
+    Uses HTTPBearer security scheme for OpenAPI documentation.
+    
+    Args:
+        credentials: HTTP Bearer token credentials from Authorization header
+        
+    Returns:
+        Dictionary containing user information
+        
+    Raises:
+        HTTPException: If token is invalid, expired, or user not found
+    """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = credentials.credentials
+    return await _validate_token_and_get_user(token)
+
+
+async def get_current_user_oauth2(
+    token: str = Depends(oauth2_scheme),
+) -> dict:
+    """
+    FastAPI dependency to get current authenticated user from OAuth2 token.
+    
+    Validates the JWT token from OAuth2 password grant flow and returns user data.
+    Uses OAuth2PasswordBearer security scheme for OpenAPI documentation.
+    
+    This is compatible with OAuth2 password grant flow used by Swagger UI.
+    
+    Args:
+        token: OAuth2 token string from OAuth2PasswordBearer
+        
+    Returns:
+        Dictionary containing user information
+        
+    Raises:
+        HTTPException: If token is invalid, expired, or user not found
+    """
+    return await _validate_token_and_get_user(token)
 
 
 async def get_current_user_id(

@@ -48,7 +48,7 @@ async def create_symbol(request: CreateSymbolRequest, router: EngineRouter = Dep
     """
     Create a new trading symbol.
 
-    Admin only - creates symbol configuration and initializes engine-specific data.
+    Creates symbol configuration and initializes engine-specific data.
     """
     db = get_db()
 

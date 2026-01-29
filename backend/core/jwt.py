@@ -5,7 +5,7 @@ Uses python-jose for JWT token creation and verification.
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from jose import JWTError, jwt
@@ -31,9 +31,9 @@ def create_access_token(data: Dict[str, str], expires_delta: Optional[timedelta]
     to_encode = data.copy()
     
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     
     to_encode.update({"exp": expire, "type": "access"})
     
@@ -52,7 +52,7 @@ def create_refresh_token(data: Dict[str, str]) -> str:
         Encoded JWT refresh token string
     """
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     
     to_encode.update({"exp": expire, "type": "refresh"})
     
@@ -94,8 +94,8 @@ def get_token_expiration_time(expires_delta: Optional[timedelta] = None) -> date
         Datetime object representing expiration time
     """
     if expires_delta:
-        return datetime.utcnow() + expires_delta
-    return datetime.utcnow() + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        return datetime.now(timezone.utc) + expires_delta
+    return datetime.now(timezone.utc) + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
 
 
 def get_refresh_token_expiration_time() -> datetime:
@@ -105,4 +105,4 @@ def get_refresh_token_expiration_time() -> datetime:
     Returns:
         Datetime object representing expiration time
     """
-    return datetime.utcnow() + timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    return datetime.now(timezone.utc) + timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
