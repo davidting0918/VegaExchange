@@ -76,7 +76,7 @@ async def _validate_token_and_get_user(token: str) -> dict:
         FROM access_tokens at
         JOIN users u ON at.user_id = u.user_id
         WHERE at.access_token = $1 
-          AND at.is_revoked = FALSE 
+          AND at.is_active = TRUE 
           AND at.expired_at > NOW()
           AND u.is_active = TRUE
         """,

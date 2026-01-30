@@ -104,7 +104,7 @@ async def register_user(
     Register a new user via Google OAuth (called after Google OAuth).
 
     Creates user account with default initial balances.
-    Requires valid API key in X-API-Key header.
+    Requires both X-API-Key and X-API-Secret headers.
     """
     db = get_db()
 
@@ -164,7 +164,7 @@ async def register_user_email(
 
     Creates user account with default initial balances.
     Password must be at least 3 characters long.
-    Requires valid API key in X-API-Key header.
+    Requires both X-API-Key and X-API-Secret headers.
     """
     db = get_db()
 
@@ -377,8 +377,8 @@ async def logout_user(current_user: dict = Depends(get_current_user)):
     await db.execute(
         """
         UPDATE access_tokens
-        SET is_revoked = TRUE
-        WHERE user_id = $1 AND is_revoked = FALSE
+        SET is_active = FALSE
+        WHERE user_id = $1 AND is_active = TRUE
         """,
         user_id,
     )
@@ -416,7 +416,7 @@ async def refresh_token(
         FROM access_tokens at
         JOIN users u ON at.user_id = u.user_id
         WHERE at.refresh_token = $1 
-          AND at.is_revoked = FALSE 
+          AND at.is_active = TRUE 
           AND at.refresh_expired_at > NOW()
           AND u.is_active = TRUE
         """,
@@ -430,8 +430,8 @@ async def refresh_token(
     await db.execute(
         """
         UPDATE access_tokens
-        SET is_revoked = TRUE
-        WHERE user_id = $1 AND is_revoked = FALSE
+        SET is_active = FALSE
+        WHERE user_id = $1 AND is_active = TRUE
         """,
         user_id,
     )
