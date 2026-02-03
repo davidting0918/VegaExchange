@@ -149,6 +149,31 @@ async def get_recent_trades(
     )
 
 
+@router.get("/list_symbols", response_model=APIResponse)
+async def list_symbols(router: EngineRouter = Depends(get_router)):
+    """
+    Get all active trading symbols.
+
+    Returns list of symbols with their configurations.
+    """
+    symbols = await router.get_all_symbols()
+    return APIResponse(success=True, data=symbols)
+
+
+@router.get("/get_symbol/{symbol}", response_model=APIResponse)
+async def get_symbol(symbol: str, router: EngineRouter = Depends(get_router)):
+    """
+    Get detailed information about a specific symbol.
+
+    Includes configuration and current market data.
+    """
+    info = await router.get_symbol_info(symbol.upper())
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
+
+    return APIResponse(success=True, data=info)
+
+
 @router.get("", response_model=APIResponse)
 async def get_all_markets(router: EngineRouter = Depends(get_router)):
     """

@@ -14,7 +14,7 @@ from scalar_fastapi import get_scalar_api_reference
 
 from backend.core.db_manager import close_database, init_database
 from backend.core.environment import env_config
-from backend.routers import auth_router, market_router, symbols_router, trading_router, users_router
+from backend.routers import admin_router, auth_router, market_router, trading_router, users_router
 
 
 @asynccontextmanager
@@ -72,7 +72,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(auth_router)
-app.include_router(symbols_router)
+app.include_router(admin_router)
 app.include_router(trading_router)
 app.include_router(market_router)
 app.include_router(users_router)
