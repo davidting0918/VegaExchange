@@ -559,6 +559,58 @@ class AMMEngine(BaseEngine):
                 quote_amount,
             )
 
+        # Create/update LP token balance in user_balances
+        lp_token_currency = f"LP-{self.symbol}"
+        await self.ensure_balance_exists(user_id, lp_token_currency, account_type="spot")
+        
+        # Update LP token balance with the new shares
+        if not await self.update_balance(user_id, lp_token_currency, lp_shares):
+            # If update fails, rollback everything
+            await self.update_balance(user_id, self.base_asset, base_amount)
+            await self.update_balance(user_id, self.quote_asset, quote_amount)
+            # Rollback pool update
+            await self.db.execute(
+                """
+                UPDATE amm_pools
+                SET reserve_base = $2,
+                    reserve_quote = $3,
+                    k_value = $4,
+                    total_lp_shares = $5,
+                    updated_at = NOW()
+                WHERE pool_id = $1
+                """,
+                pool["pool_id"],
+                reserve_base,
+                reserve_quote,
+                reserve_base * reserve_quote,
+                total_lp_shares,
+            )
+            # Rollback LP position
+            if existing_position:
+                await self.db.execute(
+                    """
+                    UPDATE lp_positions
+                    SET lp_shares = lp_shares - $3,
+                        updated_at = NOW()
+                    WHERE pool_id = $1 AND user_id = $2
+                    """,
+                    pool["pool_id"],
+                    user_id,
+                    lp_shares,
+                )
+            else:
+                await self.db.execute(
+                    """
+                    DELETE FROM lp_positions WHERE pool_id = $1 AND user_id = $2
+                    """,
+                    pool["pool_id"],
+                    user_id,
+                )
+            return {
+                "success": False,
+                "error": "Failed to update LP token balance",
+            }
+
         return {
             "success": True,
             "lp_shares": float(lp_shares),
@@ -697,6 +749,46 @@ class AMMEngine(BaseEngine):
                 user_id,
                 new_user_lp_shares,
             )
+
+        # Update LP token balance (deduct burned shares)
+        lp_token_currency = f"LP-{self.symbol}"
+        if not await self.update_balance(user_id, lp_token_currency, -lp_shares):
+            # If update fails, rollback everything
+            await self.update_balance(user_id, self.base_asset, -base_out)
+            await self.update_balance(user_id, self.quote_asset, -quote_out)
+            # Rollback pool update
+            await self.db.execute(
+                """
+                UPDATE amm_pools
+                SET reserve_base = $2,
+                    reserve_quote = $3,
+                    k_value = $4,
+                    total_lp_shares = $5,
+                    updated_at = NOW()
+                WHERE pool_id = $1
+                """,
+                pool["pool_id"],
+                reserve_base,
+                reserve_quote,
+                reserve_base * reserve_quote,
+                total_lp_shares,
+            )
+            # Rollback LP position
+            await self.db.execute(
+                """
+                UPDATE lp_positions
+                SET lp_shares = $3,
+                    updated_at = NOW()
+                WHERE pool_id = $1 AND user_id = $2
+                """,
+                pool["pool_id"],
+                user_id,
+                user_lp_shares,
+            )
+            return {
+                "success": False,
+                "error": "Failed to update LP token balance",
+            }
 
         return {
             "success": True,

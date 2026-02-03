@@ -14,7 +14,7 @@ from backend.core.db_manager import get_db
 from backend.core.id_generator import generate_pool_id
 from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType, SymbolStatus
-from backend.models.requests import CreateSymbolRequest
+from backend.models.requests import CreatePoolRequest, CreateSymbolRequest
 from backend.models.responses import APIResponse
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -27,12 +27,20 @@ async def create_symbol(
     current_user: dict = Depends(require_admin),
 ):
     """
-    Create a new trading symbol.
+    Create a new trading symbol (CLOB only).
 
-    Creates symbol configuration and initializes engine-specific data.
+    Creates symbol configuration for CLOB engine type.
+    AMM symbols should be created via /create_pool endpoint.
     Requires admin permissions.
     """
     db = get_db()
+
+    # Only allow CLOB engine type for manual symbol creation
+    if request.engine_type != EngineType.CLOB:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only CLOB symbols can be created manually. Use /create_pool endpoint for AMM symbols."
+        )
 
     # Check if symbol already exists
     existing = await db.read_one(
@@ -72,35 +80,103 @@ async def create_symbol(
         request.quantity_precision,
     )
 
-    # Initialize engine-specific data
-    if request.engine_type == EngineType.AMM:
-        # Create AMM pool with initial reserves from params
-        initial_base = request.engine_params.get("initial_reserve_base", 0)
-        initial_quote = request.engine_params.get("initial_reserve_quote", 0)
-        fee_rate = request.engine_params.get("fee_rate", 0.003)
-
-        # Generate pool ID
-        pool_id = generate_pool_id()
-        
-        await db.execute(
-            """
-            INSERT INTO amm_pools (
-                pool_id, symbol_id, reserve_base, reserve_quote,
-                k_value, fee_rate
-            ) VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            pool_id,
-            result["symbol_id"],
-            initial_base,
-            initial_quote,
-            initial_base * initial_quote,
-            fee_rate,
-        )
-
     # Invalidate cache
     router.invalidate_cache(request.symbol)
 
     return APIResponse(success=True, data=result)
+
+
+@router.post("/create_pool", response_model=APIResponse)
+async def create_pool(
+    request: CreatePoolRequest,
+    router: EngineRouter = Depends(get_router),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Create a new AMM pool (auto-creates symbol).
+
+    Creates both the symbol configuration (AMM engine) and the AMM pool
+    with initial reserves in one operation.
+    Requires admin permissions.
+    """
+    db = get_db()
+
+    # Check if symbol already exists
+    existing = await db.read_one(
+        "SELECT symbol_id FROM symbol_configs WHERE symbol = $1",
+        request.symbol,
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Symbol '{request.symbol}' already exists")
+
+    # Ensure settle is set (defaults to quote_asset)
+    settle_asset = request.settle if request.settle else request.quote_asset
+    
+    # Build engine_params from pool parameters
+    engine_params = {
+        "initial_reserve_base": float(request.initial_reserve_base),
+        "initial_reserve_quote": float(request.initial_reserve_quote),
+        "fee_rate": float(request.fee_rate),
+    }
+    engine_params_json = json.dumps(engine_params)
+    
+    # Create symbol config with AMM engine type (SERIAL id is auto-generated)
+    symbol_result = await db.execute_returning(
+        """
+        INSERT INTO symbol_configs (
+            symbol, market, base, quote, settle, engine_type, is_active,
+            engine_params, min_trade_amount, max_trade_amount,
+            price_precision, quantity_precision
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
+        RETURNING *
+        """,
+        request.symbol,
+        request.market.upper() if request.market else "SPOT",
+        request.base_asset,
+        request.quote_asset,
+        settle_asset,
+        EngineType.AMM.value,  # Always AMM for pools
+        True,  # is_active
+        engine_params_json,
+        request.min_trade_amount,
+        request.max_trade_amount,
+        request.price_precision,
+        request.quantity_precision,
+    )
+
+    # Generate pool ID
+    pool_id = generate_pool_id()
+    
+    # Calculate initial k_value
+    k_value = request.initial_reserve_base * request.initial_reserve_quote
+    
+    # Create AMM pool
+    pool_result = await db.execute_returning(
+        """
+        INSERT INTO amm_pools (
+            pool_id, symbol_id, reserve_base, reserve_quote,
+            k_value, fee_rate
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+        """,
+        pool_id,
+        symbol_result["symbol_id"],
+        request.initial_reserve_base,
+        request.initial_reserve_quote,
+        k_value,
+        request.fee_rate,
+    )
+
+    # Invalidate cache
+    router.invalidate_cache(request.symbol)
+
+    return APIResponse(
+        success=True,
+        data={
+            "symbol": symbol_result,
+            "pool": pool_result,
+        },
+    )
 
 
 @router.post("/update_symbol_status/{symbol}", response_model=APIResponse)

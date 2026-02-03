@@ -207,6 +207,42 @@ class BaseEngine(ABC):
         # Check if update affected any rows
         return "UPDATE 1" in result
 
+    async def ensure_balance_exists(
+        self,
+        user_id: str,
+        asset: str,
+        account_type: str = "spot",
+        initial_amount: Decimal = Decimal("0"),
+    ) -> bool:
+        """
+        Ensure a balance entry exists for a user and asset.
+        Creates the balance if it doesn't exist, otherwise does nothing.
+
+        Args:
+            user_id: User ID
+            asset: Asset currency code
+            account_type: Account type (default: "spot")
+            initial_amount: Initial available balance if creating new entry (default: 0)
+
+        Returns:
+            True if balance exists or was created successfully
+        """
+        result = await self.db.execute(
+            """
+            INSERT INTO user_balances (user_id, account_type, currency, available, locked)
+            VALUES ($1, $2, $3, $4, 0)
+            ON CONFLICT (account_type, user_id, currency) DO NOTHING
+            """,
+            user_id,
+            account_type,
+            asset,
+            initial_amount,
+        )
+
+        # INSERT returns empty string if conflict (balance already exists)
+        # or "INSERT 0 1" if new balance was created
+        return True
+
     async def record_trade(
         self,
         user_id: str,
