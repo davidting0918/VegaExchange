@@ -173,3 +173,29 @@ async def get_current_user_id(
         User ID string
     """
     return current_user["user_id"]
+
+
+async def require_admin(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """
+    FastAPI dependency to require admin permissions.
+    
+    Validates that the current authenticated user has admin privileges.
+    Must be used after get_current_user dependency.
+    
+    Args:
+        current_user: User dictionary from get_current_user dependency
+        
+    Returns:
+        User dictionary (same as input, for convenience)
+        
+    Raises:
+        HTTPException: If user is not an admin (403 Forbidden)
+    """
+    if not current_user.get("is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin permissions required",
+        )
+    return current_user

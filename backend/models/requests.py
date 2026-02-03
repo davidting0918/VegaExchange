@@ -16,6 +16,8 @@ class CreateSymbolRequest(BaseModel):
     symbol: str = Field(..., description="Trading pair symbol, e.g., 'BTC-USDT'")
     base_asset: str = Field(..., description="Base asset, e.g., 'BTC'")
     quote_asset: str = Field(..., description="Quote asset, e.g., 'USDT'")
+    market: Optional[str] = Field(default="spot", description="Market type: spot, perp, option, future")
+    settle: Optional[str] = Field(default=None, description="Settlement asset (defaults to quote_asset if not provided)")
     engine_type: EngineType = Field(..., description="Engine type for this symbol")
     engine_params: Dict[str, Any] = Field(default_factory=dict, description="Engine-specific parameters")
     min_trade_amount: Decimal = Field(default=Decimal("0.0001"), description="Minimum trade amount")
@@ -23,10 +25,12 @@ class CreateSymbolRequest(BaseModel):
     price_precision: int = Field(default=8, description="Price decimal precision")
     quantity_precision: int = Field(default=8, description="Quantity decimal precision")
 
-    @field_validator("symbol", "base_asset", "quote_asset")
+    @field_validator("symbol", "base_asset", "quote_asset", "market", "settle")
     @classmethod
-    def uppercase_assets(cls, v: str) -> str:
-        return v.upper()
+    def uppercase_assets(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return v.upper()
+        return v
 
 
 class TradeRequest(BaseModel):
