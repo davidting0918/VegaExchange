@@ -559,6 +559,24 @@ class AMMEngine(BaseEngine):
                 quote_amount,
             )
 
+        # Log the add event to lp_events
+        await self.db.execute(
+            """
+            INSERT INTO lp_events 
+            (pool_id, user_id, event_type, lp_shares, base_amount, quote_amount,
+             pool_reserve_base, pool_reserve_quote, pool_total_lp_shares)
+            VALUES ($1, $2, 'add', $3, $4, $5, $6, $7, $8)
+            """,
+            pool["pool_id"],
+            user_id,
+            lp_shares,
+            base_amount,
+            quote_amount,
+            new_reserve_base,
+            new_reserve_quote,
+            new_total_lp_shares,
+        )
+
         # Create/update LP token balance in user_balances
         lp_token_currency = f"LP-{self.symbol}"
         await self.ensure_balance_exists(user_id, lp_token_currency, account_type="spot")
@@ -749,6 +767,24 @@ class AMMEngine(BaseEngine):
                 user_id,
                 new_user_lp_shares,
             )
+
+        # Log the remove event to lp_events
+        await self.db.execute(
+            """
+            INSERT INTO lp_events 
+            (pool_id, user_id, event_type, lp_shares, base_amount, quote_amount,
+             pool_reserve_base, pool_reserve_quote, pool_total_lp_shares)
+            VALUES ($1, $2, 'remove', $3, $4, $5, $6, $7, $8)
+            """,
+            pool["pool_id"],
+            user_id,
+            lp_shares,
+            base_out,
+            quote_out,
+            new_reserve_base,
+            new_reserve_quote,
+            new_total_lp_shares,
+        )
 
         # Update LP token balance (deduct burned shares)
         lp_token_currency = f"LP-{self.symbol}"
