@@ -2,6 +2,7 @@
 Base engine interface for all trading engines
 """
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -207,6 +208,42 @@ class BaseEngine(ABC):
         # Check if update affected any rows
         return "UPDATE 1" in result
 
+    async def ensure_balance_exists(
+        self,
+        user_id: str,
+        asset: str,
+        account_type: str = "spot",
+        initial_amount: Decimal = Decimal("0"),
+    ) -> bool:
+        """
+        Ensure a balance entry exists for a user and asset.
+        Creates the balance if it doesn't exist, otherwise does nothing.
+
+        Args:
+            user_id: User ID
+            asset: Asset currency code
+            account_type: Account type (default: "spot")
+            initial_amount: Initial available balance if creating new entry (default: 0)
+
+        Returns:
+            True if balance exists or was created successfully
+        """
+        result = await self.db.execute(
+            """
+            INSERT INTO user_balances (user_id, account_type, currency, available, locked)
+            VALUES ($1, $2, $3, $4, 0)
+            ON CONFLICT (account_type, user_id, currency) DO NOTHING
+            """,
+            user_id,
+            account_type,
+            asset,
+            initial_amount,
+        )
+
+        # INSERT returns empty string if conflict (balance already exists)
+        # or "INSERT 0 1" if new balance was created
+        return True
+
     async def record_trade(
         self,
         user_id: str,
@@ -235,7 +272,7 @@ class BaseEngine(ABC):
                 trade_id, symbol_id, user_id, side, engine_type,
                 price, quantity, quote_amount,
                 fee_amount, fee_asset, status, engine_data,
-                counterparty_user_id
+                counterparty
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
             )
@@ -252,8 +289,8 @@ class BaseEngine(ABC):
             fee_amount,
             fee_asset,
             status.value,
-            engine_data or {},
-            counterparty_user_id,
+            json.dumps(engine_data) if engine_data else "{}",
+            counterparty_user_id,  # Maps to counterparty column (NULL for AMM trades)
         )
 
         return result["trade_id"]

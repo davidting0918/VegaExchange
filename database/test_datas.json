@@ -1,108 +1,30 @@
 {
-  "symbols": [
+  "users": [
     {
-      "symbol": "ORDER-USDT",
-      "base_asset": "ORDER",
-      "quote_asset": "USDT",
-      "engine_type": 1,
-      "engine_params": {
-        "maker_fee": 0.001,
-        "taker_fee": 0.002,
-        "tick_size": 0.01,
-        "lot_size": 0.1
-      },
-      "min_trade_amount": 0.1,
-      "max_trade_amount": 100000,
-      "price_precision": 4,
-      "quantity_precision": 4
+      "email": "lp1@vegaexchange.com",
+      "password": "Lp1!",
+      "user_name": "Liquidity Provider 1"
     },
     {
-      "symbol": "AMM-USDT",
+      "email": "lp2@vegaexchange.com",
+      "password": "Lp2@",
+      "user_name": "Liquidity Provider 2"
+    }
+  ],
+  "amm_pools": [
+    {
+      "symbol": "AMM/USDT-USDT:SPOT",
       "base_asset": "AMM",
       "quote_asset": "USDT",
-      "engine_type": 0,
-      "engine_params": {
-        "fee_rate": 0.003,
-        "initial_reserve_base": 10000,
-        "initial_reserve_quote": 100000
-      },
-      "min_trade_amount": 0.001,
-      "max_trade_amount": 100000,
-      "price_precision": 6,
-      "quantity_precision": 6
+      "market": "SPOT",
+      "settle": "USDT",
+      "initial_reserve_base": 100000,
+      "initial_reserve_quote": 1000000,
+      "fee_rate": "0.003",
+      "min_trade_amount": "10",
+      "max_trade_amount": "100000000",
+      "price_precision": 8,
+      "quantity_precision": 8
     }
-  ],
-  "test_users": [
-    {
-      "google_id": "test_user_001",
-      "email": "testuser1@vegaexchange.test",
-      "display_name": "Test User 1",
-      "is_admin": false,
-      "initial_balances": {
-        "USDT": 100000,
-        "ORDER": 1000,
-        "AMM": 1000
-      }
-    },
-    {
-      "google_id": "test_user_002",
-      "email": "testuser2@vegaexchange.test",
-      "display_name": "Test User 2",
-      "is_admin": false,
-      "initial_balances": {
-        "USDT": 100000,
-        "ORDER": 1000,
-        "AMM": 1000
-      }
-    },
-    {
-      "google_id": "admin_user_001",
-      "email": "admin@vegaexchange.test",
-      "display_name": "Admin User",
-      "is_admin": true,
-      "initial_balances": {
-        "USDT": 10000000,
-        "ORDER": 1000000,
-        "AMM": 1000000
-      }
-    }
-  ],
-  "seed_orderbook": {
-    "ORDER-USDT": {
-      "mid_price": 10.0,
-      "spread_pct": 1.0,
-      "levels": 10,
-      "quantity_per_level": 100
-    }
-  },
-  "enum_reference": {
-    "engine_type": {
-      "0": "AMM",
-      "1": "CLOB"
-    },
-    "symbol_status": {
-      "0": "active",
-      "1": "paused",
-      "2": "maintenance"
-    },
-    "order_side": {
-      "0": "buy",
-      "1": "sell"
-    },
-    "order_type": {
-      "0": "market",
-      "1": "limit"
-    },
-    "order_status": {
-      "0": "open",
-      "1": "partial",
-      "2": "filled",
-      "3": "cancelled"
-    },
-    "trade_status": {
-      "0": "pending",
-      "1": "completed",
-      "2": "failed"
-    }
-  }
+  ]
 }

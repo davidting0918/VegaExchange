@@ -457,3 +457,67 @@ async def get_lp_position(
             "has_position": True,
         },
     )
+
+
+@router.get("/liquidity/history", response_model=APIResponse)
+async def get_liquidity_history(
+    symbol: str = Query(..., description="Trading symbol"),
+    user_id: str = Depends(get_current_user_id),
+    router: EngineRouter = Depends(get_router),
+):
+    """
+    Get user's liquidity event history for an AMM pool.
+    
+    Returns a list of all add/remove liquidity events for the user.
+    """
+    engine = await router._get_engine(symbol)
+
+    if not engine:
+        raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
+
+    if engine.engine_type != EngineType.AMM:
+        raise HTTPException(status_code=400, detail="Liquidity history only available for AMM symbols")
+
+    # Get pool to get pool_id
+    pool = await engine._get_pool()
+    if not pool:
+        raise HTTPException(status_code=404, detail=f"No AMM pool found for {symbol}")
+
+    # Query lp_events for user's history
+    events = await engine.db.read_all(
+        """
+        SELECT id, pool_id, user_id, event_type, lp_shares, base_amount, quote_amount,
+               pool_reserve_base, pool_reserve_quote, pool_total_lp_shares, created_at
+        FROM lp_events
+        WHERE pool_id = $1 AND user_id = $2
+        ORDER BY created_at DESC
+        """,
+        pool["pool_id"],
+        user_id,
+    )
+
+    # Convert Decimal fields to float for JSON serialization
+    formatted_events = []
+    for event in events:
+        formatted_events.append({
+            "id": event["id"],
+            "pool_id": event["pool_id"],
+            "user_id": event["user_id"],
+            "event_type": event["event_type"],
+            "lp_shares": float(event["lp_shares"]),
+            "base_amount": float(event["base_amount"]),
+            "quote_amount": float(event["quote_amount"]),
+            "pool_reserve_base": float(event["pool_reserve_base"]),
+            "pool_reserve_quote": float(event["pool_reserve_quote"]),
+            "pool_total_lp_shares": float(event["pool_total_lp_shares"]),
+            "created_at": event["created_at"].isoformat() if event["created_at"] else None,
+        })
+
+    return APIResponse(
+        success=True,
+        data={
+            "symbol": symbol.upper(),
+            "events": formatted_events,
+            "total_events": len(formatted_events),
+        },
+    )

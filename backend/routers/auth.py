@@ -400,16 +400,36 @@ async def refresh_token(
     """
     db = get_db()
     
-    # Verify refresh token
+    # Verify refresh token JWT signature and expiration
     payload = verify_token(refresh_token, token_type="refresh")
     if payload is None:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        raise HTTPException(status_code=401, detail="Invalid or expired JWT token")
     
     user_id = payload.get("sub") or payload.get("user_id")
     if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
+        raise HTTPException(status_code=401, detail="Invalid token payload - missing user_id")
     
-    # Verify refresh token exists in database and is not revoked
+    # First, check if token exists in database (without all conditions)
+    token_exists = await db.read_one(
+        """
+        SELECT at.is_active, at.refresh_expired_at, u.is_active as user_active
+        FROM access_tokens at
+        JOIN users u ON at.user_id = u.user_id
+        WHERE at.refresh_token = $1
+        """,
+        refresh_token,
+    )
+    
+    if not token_exists:
+        raise HTTPException(status_code=401, detail="Refresh token not found in database")
+    
+    if not token_exists.get("is_active"):
+        raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+    
+    if not token_exists.get("user_active"):
+        raise HTTPException(status_code=401, detail="User account is inactive")
+    
+    # Check if database expiration has passed
     token_record = await db.read_one(
         """
         SELECT at.*, u.is_active
@@ -424,7 +444,7 @@ async def refresh_token(
     )
     
     if not token_record:
-        raise HTTPException(status_code=401, detail="Refresh token not found, revoked, or expired")
+        raise HTTPException(status_code=401, detail="Refresh token expired in database")
     
     # Revoke old tokens
     await db.execute(

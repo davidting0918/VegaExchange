@@ -263,6 +263,32 @@ CREATE INDEX idx_lp_positions_pool_id ON lp_positions(pool_id);
 CREATE INDEX idx_lp_positions_user_id ON lp_positions(user_id);
 
 -- =====================================================
+-- LP EVENTS TABLE (Liquidity Event Log)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS lp_events (
+    id SERIAL PRIMARY KEY,
+    pool_id TEXT NOT NULL REFERENCES amm_pools(pool_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    
+    event_type TEXT NOT NULL CHECK (event_type IN ('add', 'remove')),
+    lp_shares DECIMAL(36, 18) NOT NULL,
+    base_amount DECIMAL(36, 18) NOT NULL,
+    quote_amount DECIMAL(36, 18) NOT NULL,
+    
+    -- Snapshot of pool state at time of event (for P&L calculation)
+    pool_reserve_base DECIMAL(36, 18) NOT NULL,
+    pool_reserve_quote DECIMAL(36, 18) NOT NULL,
+    pool_total_lp_shares DECIMAL(36, 18) NOT NULL,
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_lp_events_pool_id ON lp_events(pool_id);
+CREATE INDEX idx_lp_events_user_id ON lp_events(user_id);
+CREATE INDEX idx_lp_events_created_at ON lp_events(created_at DESC);
+CREATE INDEX idx_lp_events_pool_user ON lp_events(pool_id, user_id);
+
+-- =====================================================
 -- HELPER FUNCTIONS
 -- =====================================================
 
@@ -274,6 +300,7 @@ CREATE INDEX idx_lp_positions_user_id ON lp_positions(user_id);
 --   - trade_id: 13-digit timestamp (milliseconds)
 --   - symbol_id: SERIAL (auto-increment)
 --   - lp_positions.id: SERIAL (auto-increment)
+--   - lp_events.id: SERIAL (auto-increment)
 
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
