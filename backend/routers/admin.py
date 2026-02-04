@@ -5,6 +5,8 @@ All endpoints require admin permissions.
 """
 
 import json
+from decimal import Decimal
+from math import sqrt
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -150,13 +152,19 @@ async def create_pool(
     # Calculate initial k_value
     k_value = request.initial_reserve_base * request.initial_reserve_quote
     
-    # Create AMM pool
+    # Calculate protocol LP shares (geometric mean of initial reserves)
+    protocol_lp_shares = Decimal(str(sqrt(float(request.initial_reserve_base * request.initial_reserve_quote))))
+    
+    # Create AMM pool with protocol LP shares
+    # Note: Protocol shares are implicitly tracked as:
+    #   protocol_shares = total_lp_shares - sum(all user lp_shares in lp_positions)
+    # This avoids needing a fake "PROTOCOL" user in the users table
     pool_result = await db.execute_returning(
         """
         INSERT INTO amm_pools (
             pool_id, symbol_id, reserve_base, reserve_quote,
-            k_value, fee_rate
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            k_value, fee_rate, total_lp_shares
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
         """,
         pool_id,
@@ -165,6 +173,7 @@ async def create_pool(
         request.initial_reserve_quote,
         k_value,
         request.fee_rate,
+        protocol_lp_shares,
     )
 
     # Invalidate cache
@@ -175,6 +184,7 @@ async def create_pool(
         data={
             "symbol": symbol_result,
             "pool": pool_result,
+            "protocol_lp_shares": float(protocol_lp_shares),
         },
     )
 

@@ -5,6 +5,7 @@ Uses python-jose for JWT token creation and verification.
 """
 
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
@@ -35,7 +36,12 @@ def create_access_token(data: Dict[str, str], expires_delta: Optional[timedelta]
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    to_encode.update({"exp": expire, "type": "access"})
+    # Add unique JWT ID (jti) to ensure each token is unique
+    to_encode.update({
+        "exp": expire,
+        "type": "access",
+        "jti": str(uuid.uuid4()),
+    })
     
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return encoded_jwt
@@ -54,7 +60,12 @@ def create_refresh_token(data: Dict[str, str]) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     
-    to_encode.update({"exp": expire, "type": "refresh"})
+    # Add unique JWT ID (jti) to ensure each token is unique
+    to_encode.update({
+        "exp": expire,
+        "type": "refresh",
+        "jti": str(uuid.uuid4()),
+    })
     
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return encoded_jwt

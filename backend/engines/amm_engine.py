@@ -578,7 +578,7 @@ class AMMEngine(BaseEngine):
         )
 
         # Create/update LP token balance in user_balances
-        lp_token_currency = f"LP-{self.symbol}"
+        lp_token_currency = f"LP-{self.base_asset}"
         await self.ensure_balance_exists(user_id, lp_token_currency, account_type="spot")
         
         # Update LP token balance with the new shares
@@ -653,6 +653,9 @@ class AMMEngine(BaseEngine):
         Returns:
             Dictionary with success status, base_out, quote_out, and pool info
         """
+        # Note: Protocol liquidity is implicitly protected because it has no lp_position record.
+        # Users can only remove liquidity they own (tracked in lp_positions table).
+        
         # Get pool
         pool = await self._get_pool()
         if not pool:
@@ -787,7 +790,7 @@ class AMMEngine(BaseEngine):
         )
 
         # Update LP token balance (deduct burned shares)
-        lp_token_currency = f"LP-{self.symbol}"
+        lp_token_currency = f"LP-{self.base_asset}"
         if not await self.update_balance(user_id, lp_token_currency, -lp_shares):
             # If update fails, rollback everything
             await self.update_balance(user_id, self.base_asset, -base_out)

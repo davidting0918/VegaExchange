@@ -2,6 +2,7 @@
 Base engine interface for all trading engines
 """
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -271,7 +272,7 @@ class BaseEngine(ABC):
                 trade_id, symbol_id, user_id, side, engine_type,
                 price, quantity, quote_amount,
                 fee_amount, fee_asset, status, engine_data,
-                counterparty_user_id
+                counterparty
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
             )
@@ -288,8 +289,8 @@ class BaseEngine(ABC):
             fee_amount,
             fee_asset,
             status.value,
-            engine_data or {},
-            counterparty_user_id,
+            json.dumps(engine_data) if engine_data else "{}",
+            counterparty_user_id,  # Maps to counterparty column (NULL for AMM trades)
         )
 
         return result["trade_id"]
