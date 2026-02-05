@@ -28,20 +28,21 @@ export const loginWithEmail = createAsyncThunk<
   }
 })
 
-// Google login thunk
+// Google auth thunk (unified login/register)
 export const loginWithGoogle = createAsyncThunk<
-  TokenResponse,
-  string, // google_id
+  TokenResponse & { is_new_user?: boolean },
+  string, // Google ID token (credential)
   { rejectValue: string }
->('auth/loginWithGoogle', async (googleId, { rejectWithValue }) => {
+>('auth/loginWithGoogle', async (idToken, { rejectWithValue }) => {
   try {
-    const response = await authService.loginWithGoogle(googleId)
+    // Use the unified Google auth endpoint
+    const response = await authService.authWithGoogle(idToken)
     if (response.success && response.data) {
       return response.data
     }
-    throw new Error(response.message || 'Google login failed')
+    throw new Error(response.message || 'Google authentication failed')
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Google login failed'
+    const message = error instanceof Error ? error.message : 'Google authentication failed'
     return rejectWithValue(message)
   }
 })

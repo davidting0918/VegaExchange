@@ -4,10 +4,13 @@ Authentication API Routes
 All authentication-related endpoints including registration, login, logout, and token management.
 """
 
+import os
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 
 from backend.core.api_key import get_api_key_info
 from backend.core.auth import get_current_user
@@ -26,6 +29,65 @@ from backend.models.requests import EmailRegisterRequest, EmailLoginRequest
 from backend.models.responses import APIResponse
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+
+
+class GoogleAuthRequest(BaseModel):
+    """Request body for Google authentication"""
+    id_token: str
+
+
+async def _verify_google_token(id_token: str) -> dict:
+    """
+    Verify Google ID token and return user info.
+    
+    Args:
+        id_token: The Google ID token from frontend
+        
+    Returns:
+        Dictionary with user info (sub, email, name, picture, email_verified)
+        
+    Raises:
+        HTTPException if token is invalid
+    """
+    async with httpx.AsyncClient() as client:
+        # Verify token with Google's tokeninfo endpoint
+        response = await client.get(
+            GOOGLE_TOKEN_INFO_URL,
+            params={"id_token": id_token}
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid Google ID token"
+            )
+        
+        token_info = response.json()
+        
+        # Verify the token is for our app (if GOOGLE_CLIENT_ID is configured)
+        if GOOGLE_CLIENT_ID and token_info.get("aud") != GOOGLE_CLIENT_ID:
+            raise HTTPException(
+                status_code=401,
+                detail="Token was not issued for this application"
+            )
+        
+        # Check if email is verified
+        if token_info.get("email_verified") != "true":
+            raise HTTPException(
+                status_code=401,
+                detail="Email not verified by Google"
+            )
+        
+        return {
+            "google_id": token_info.get("sub"),
+            "email": token_info.get("email"),
+            "name": token_info.get("name", token_info.get("email", "").split("@")[0]),
+            "picture": token_info.get("picture"),
+        }
 
 
 # Helper functions
@@ -92,7 +154,119 @@ async def _create_and_store_tokens(user_id: str, include_refresh: bool = True) -
     return result
 
 
-@router.post("/register", response_model=APIResponse)
+# =============================================================================
+# Google OAuth Endpoints
+# =============================================================================
+
+@router.post("/google", response_model=APIResponse)
+async def google_auth(request: GoogleAuthRequest):
+    """
+    Unified Google OAuth authentication endpoint.
+    
+    Handles both login and registration:
+    - If user exists (by google_id) → Login
+    - If user doesn't exist → Create account and Login
+    
+    Frontend should send the Google ID token received from Google Sign-In SDK.
+    
+    Returns:
+        - user: User profile data
+        - balances: User's token balances
+        - access_token: JWT access token
+        - refresh_token: JWT refresh token
+        - is_new_user: Boolean indicating if this was a new registration
+    """
+    db = get_db()
+    
+    # Verify Google ID token
+    google_info = await _verify_google_token(request.id_token)
+    google_id = google_info["google_id"]
+    email = google_info["email"]
+    
+    # Check if user exists by google_id
+    user = await db.read_one(
+        "SELECT * FROM users WHERE google_id = $1",
+        google_id,
+    )
+    
+    is_new_user = False
+    
+    if not user:
+        # Check if email is already used by another account
+        existing_email = await db.read_one(
+            "SELECT user_id, google_id FROM users WHERE email = $1",
+            email,
+        )
+        
+        if existing_email:
+            if existing_email.get("google_id"):
+                # Another Google account with this email
+                raise HTTPException(
+                    status_code=400,
+                    detail="Email is already associated with another Google account"
+                )
+            else:
+                # Email account exists - link Google to existing account
+                await db.execute(
+                    """
+                    UPDATE users 
+                    SET google_id = $1, photo_url = COALESCE(photo_url, $2)
+                    WHERE user_id = $3
+                    """,
+                    google_id,
+                    google_info.get("picture"),
+                    existing_email["user_id"],
+                )
+                user = await db.read_one(
+                    "SELECT * FROM users WHERE user_id = $1",
+                    existing_email["user_id"],
+                )
+        else:
+            # Create new user
+            is_new_user = True
+            user_id = await _ensure_unique_user_id()
+            
+            user = await db.execute_returning(
+                """
+                INSERT INTO users (user_id, google_id, email, user_name, photo_url)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING *
+                """,
+                user_id,
+                google_id,
+                email,
+                google_info.get("name", email.split("@")[0]),
+                google_info.get("picture"),
+            )
+            
+            # Create initial balances for new user
+            await create_initial_balances(user["user_id"], account_type="spot")
+    
+    # Update last login
+    await _update_last_login(user["user_id"])
+    
+    # Create and store tokens
+    token_data = await _create_and_store_tokens(user["user_id"])
+    
+    # Get balances
+    balances = await get_user_balances_util(user["user_id"], include_total=True)
+    
+    return APIResponse(
+        success=True,
+        data={
+            "user": user,
+            "balances": balances,
+            "is_new_user": is_new_user,
+            **token_data,
+        },
+    )
+
+
+# =============================================================================
+# Legacy Registration Endpoints (kept for backward compatibility)
+# =============================================================================
+
+@router.post("/register", response_model=APIResponse, deprecated=True)
 async def register_user(
     google_id: str = Query(..., description="Google OAuth ID"),
     email: str = Query(..., description="User email"),
@@ -215,11 +389,13 @@ async def register_user_email(
     )
 
 
-@router.post("/login", response_model=APIResponse)
+@router.post("/login", response_model=APIResponse, deprecated=True)
 async def login_user(
     google_id: str = Query(..., description="Google OAuth ID"),
 ):
     """
+    [DEPRECATED] Use /api/auth/google instead.
+    
     Login user via Google OAuth (called after Google OAuth verification).
 
     Returns user data, balances, and JWT tokens.
