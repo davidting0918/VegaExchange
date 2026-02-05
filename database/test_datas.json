@@ -18,11 +18,40 @@
       "quote_asset": "USDT",
       "market": "SPOT",
       "settle": "USDT",
-      "initial_reserve_base": 100000,
-      "initial_reserve_quote": 1000000,
-      "fee_rate": "0.003",
+      "initial_reserve_base": "10000000",
+      "initial_reserve_quote": "10000000",
+      "fee_rate": "0.001",
       "min_trade_amount": "10",
       "max_trade_amount": "100000000",
+      "price_precision": 8,
+      "quantity_precision": 8
+    },
+    {
+      "symbol": "VEGA/USDT-USDT:SPOT",
+      "base_asset": "VEGA",
+      "quote_asset": "USDT",
+      "market": "SPOT",
+      "settle": "USDT",
+      "initial_reserve_base": "10000000",
+      "initial_reserve_quote": "100000000",
+      "fee_rate": "0.0003",
+      "min_trade_amount": "100",
+      "max_trade_amount": "1000000",
+      "price_precision": 8,
+      "quantity_precision": 8
+    }
+  ],
+  "orderbooks": [
+    {
+      "symbol": "VEGA/USDT-USDT:SPOT",
+      "base_asset": "VEGA",
+      "quote_asset": "USDT",
+      "market": "SPOT",
+      "settle": "USDT",
+      "engine_type": 1,
+      "engine_params": {},
+      "min_trade_amount": "100",
+      "max_trade_amount": "1000000",
       "price_precision": 8,
       "quantity_precision": 8
     }

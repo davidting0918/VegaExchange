@@ -85,11 +85,17 @@ export const fetchQuote = createAsyncThunk<QuoteResponse, QuoteRequest, { reject
 )
 
 // Fetch recent trades for a symbol
-export const fetchRecentTrades = createAsyncThunk<Trade[], string, { rejectValue: string }>(
+// Parameters: { symbol: string, engineType?: number, limit?: number }
+export const fetchRecentTrades = createAsyncThunk<
+  Trade[],
+  { symbol: string; engineType?: number; limit?: number },
+  { rejectValue: string }
+>(
   'trading/fetchRecentTrades',
-  async (symbol, { rejectWithValue }) => {
+  async ({ symbol, engineType = 0, limit = 20 }, { rejectWithValue }) => {
     try {
-      const response = await marketService.getRecentTrades(symbol, 20)
+      // engineType: 0 = AMM, 1 = CLOB
+      const response = await marketService.getRecentTrades(symbol, engineType, limit)
       if (response.success && response.data) {
         return response.data
       }

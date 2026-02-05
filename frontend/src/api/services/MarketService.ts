@@ -1,5 +1,6 @@
 import { apiClient } from '../client'
 import type { ApiResponse, Symbol, PoolInfo, Trade } from '../../types'
+import { toPoolApiPath } from '../../utils/market'
 
 // Market data response
 interface MarketData {
@@ -14,17 +15,28 @@ interface MarketData {
   quote_volume_24h: string
 }
 
+// Engine type constants
+const ENGINE_TYPE = {
+  AMM: 0,
+  CLOB: 1,
+} as const
+
 class MarketService {
   private basePath = '/api/market'
 
-  // URL encode symbol for API paths (handles /, :, and other special chars)
+  // Convert symbol to pool API path format: {base}/{quote}/{settle}/{market}
+  private toPoolPath(symbol: string): string {
+    return toPoolApiPath(symbol)
+  }
+
+  // URL encode symbol for non-pool API paths
   private encodeSymbol(symbol: string): string {
     return encodeURIComponent(symbol)
   }
 
   // Get all active symbols
   async getSymbols(): Promise<ApiResponse<Symbol[]>> {
-    // Note: /list_symbols has route ordering issue in backend, use /api/market instead
+    // Use /api/market to get all markets
     const response = await apiClient.get(this.basePath)
     // The /api/market endpoint returns { markets: [...] }, extract the array
     const data = response.data
@@ -53,13 +65,14 @@ class MarketService {
 
   // Get symbol details
   async getSymbol(symbol: string): Promise<ApiResponse<Symbol>> {
-    const response = await apiClient.get(`${this.basePath}/get_symbol/${this.encodeSymbol(symbol)}`)
+    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}`)
     return response.data
   }
 
   // Get market data for a symbol
-  async getMarketData(symbol: string): Promise<ApiResponse<MarketData>> {
-    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}`)
+  async getMarketData(symbol: string, engineType?: number): Promise<ApiResponse<MarketData>> {
+    const params = engineType !== undefined ? { engine_type: engineType } : {}
+    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}`, { params })
     return response.data
   }
 
@@ -69,9 +82,9 @@ class MarketService {
     return response.data
   }
 
-  // Get AMM pool data
+  // Get AMM pool data - uses /api/pool/{base}/{quote}/{settle}/{market}
   async getPoolData(symbol: string): Promise<ApiResponse<PoolInfo>> {
-    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}/pool`)
+    const response = await apiClient.get(`/api/pool/${this.toPoolPath(symbol)}`)
     const data = response.data
     
     // Transform backend response to match PoolInfo type
@@ -104,8 +117,18 @@ class MarketService {
   }
 
   // Get recent trades for a symbol
-  async getRecentTrades(symbol: string, limit: number = 50): Promise<ApiResponse<Trade[]>> {
-    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}/trades`, {
+  // Uses /api/pool/{base}/{quote}/{settle}/{market}/trades for AMM or /api/orderbook/{symbol}/trades for CLOB
+  async getRecentTrades(
+    symbol: string,
+    engineType: number = ENGINE_TYPE.AMM,
+    limit: number = 50
+  ): Promise<ApiResponse<Trade[]>> {
+    // Choose endpoint based on engine type
+    const endpoint = engineType === ENGINE_TYPE.AMM
+      ? `/api/pool/${this.toPoolPath(symbol)}/trades`
+      : `/api/orderbook/${this.encodeSymbol(symbol)}/trades`
+    
+    const response = await apiClient.get(endpoint, {
       params: { limit },
     })
     const data = response.data
@@ -120,7 +143,7 @@ class MarketService {
     return data
   }
 
-  // Get orderbook (for CLOB symbols)
+  // Get orderbook (for CLOB symbols) - now uses /api/orderbook/{symbol}
   async getOrderbook(
     symbol: string,
     levels: number = 20
@@ -130,9 +153,51 @@ class MarketService {
       asks: Array<{ price: string; quantity: string }>
     }>
   > {
-    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}/orderbook`, {
+    // New endpoint: GET /api/orderbook/{symbol}
+    const response = await apiClient.get(`/api/orderbook/${this.encodeSymbol(symbol)}`, {
       params: { levels },
     })
+    return response.data
+  }
+
+  // Get all AMM pools
+  async getAllPools(): Promise<ApiResponse<PoolInfo[]>> {
+    const response = await apiClient.get('/api/pool')
+    const data = response.data
+    
+    if (data.success && data.data?.pools) {
+      return {
+        success: true,
+        data: data.data.pools,
+      }
+    }
+    return data
+  }
+
+  // Get all CLOB orderbook markets
+  async getAllOrderbookMarkets(): Promise<ApiResponse<Symbol[]>> {
+    const response = await apiClient.get('/api/orderbook')
+    const data = response.data
+    
+    if (data.success && data.data?.markets) {
+      return {
+        success: true,
+        data: data.data.markets,
+      }
+    }
+    return data
+  }
+
+  // Get available engines for a symbol
+  async getSymbolEngines(symbol: string): Promise<ApiResponse<{
+    symbol: string
+    engines: Array<{
+      engine_type: number
+      engine_name: string
+      market_data: Record<string, unknown>
+    }>
+  }>> {
+    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}/engines`)
     return response.data
   }
 }

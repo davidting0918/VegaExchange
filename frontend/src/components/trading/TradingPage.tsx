@@ -2,7 +2,7 @@ import React, { useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTrading, useTradingInitialization } from '../../hooks'
 import { Card, CardHeader } from '../common'
-import { toMarketId, getDisplayName, groupSymbolsByEngine } from '../../utils'
+import { getDisplayName, groupSymbolsByEngine, toPoolUrlPath, toMarketUrlPath } from '../../utils'
 import type { Symbol } from '../../types'
 
 // Market Card Component
@@ -10,26 +10,31 @@ const MarketCard: React.FC<{
   symbol: Symbol
   isSelected: boolean
   onSelect: () => void
-}> = ({ symbol, isSelected, onSelect }) => {
+  variant?: 'amm' | 'clob'
+}> = ({ symbol, isSelected, onSelect, variant = 'amm' }) => {
+  const accentColor = variant === 'amm' ? 'accent-blue' : 'accent-purple'
+  
   return (
     <button
       onClick={onSelect}
       className={`w-full p-3 rounded-lg border text-left transition-all ${
         isSelected
-          ? 'bg-accent-blue/10 border-accent-blue'
+          ? `bg-${accentColor}/10 border-${accentColor}`
           : 'bg-bg-tertiary border-border-default hover:border-border-hover'
       }`}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-accent-blue/20 flex items-center justify-center">
-            <span className="text-xs font-bold text-accent-blue">
+          <div className={`w-8 h-8 rounded-full ${variant === 'amm' ? 'bg-accent-blue/20' : 'bg-purple-500/20'} flex items-center justify-center`}>
+            <span className={`text-xs font-bold ${variant === 'amm' ? 'text-accent-blue' : 'text-purple-400'}`}>
               {symbol.base?.charAt(0)}
             </span>
           </div>
           <div>
             <p className="font-medium text-text-primary">{getDisplayName(symbol)}</p>
-            <p className="text-xs text-text-tertiary">{symbol.market?.toUpperCase() || 'SPOT'}</p>
+            <p className="text-xs text-text-tertiary">
+              {variant === 'amm' ? 'AMM Pool' : 'Order Book'} • {symbol.market?.toUpperCase() || 'SPOT'}
+            </p>
           </div>
         </div>
         {symbol.current_price && (
@@ -62,8 +67,14 @@ export const TradingPage: React.FC = () => {
     }
   }, [symbols.length, loadSymbols])
 
-  const handleSymbolSelect = (symbol: Symbol) => {
-    navigate(`/trade/${toMarketId(symbol)}`)
+  // Navigate to AMM Pool detail page
+  const handleAMMSelect = (symbol: Symbol) => {
+    navigate(toPoolUrlPath(symbol.symbol))
+  }
+
+  // Navigate to CLOB Market trading page
+  const handleCLOBSelect = (symbol: Symbol) => {
+    navigate(toMarketUrlPath(symbol.symbol))
   }
 
   return (
@@ -91,7 +102,8 @@ export const TradingPage: React.FC = () => {
                   key={symbol.symbol}
                   symbol={symbol}
                   isSelected={false}
-                  onSelect={() => handleSymbolSelect(symbol)}
+                  onSelect={() => handleAMMSelect(symbol)}
+                  variant="amm"
                 />
               ))
             ) : (
@@ -113,7 +125,8 @@ export const TradingPage: React.FC = () => {
                   key={symbol.symbol}
                   symbol={symbol}
                   isSelected={false}
-                  onSelect={() => handleSymbolSelect(symbol)}
+                  onSelect={() => handleCLOBSelect(symbol)}
+                  variant="clob"
                 />
               ))
             ) : (

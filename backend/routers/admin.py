@@ -44,13 +44,18 @@ async def create_symbol(
             detail=f"Only CLOB symbols can be created manually. Use /create_pool endpoint for AMM symbols."
         )
 
-    # Check if symbol already exists
+    # Check if symbol + engine_type combination already exists
+    # (Same symbol can exist with different engine types for arbitrage)
     existing = await db.read_one(
-        "SELECT symbol_id FROM symbol_configs WHERE symbol = $1",
+        "SELECT symbol_id FROM symbol_configs WHERE symbol = $1 AND engine_type = $2",
         request.symbol,
+        request.engine_type.value,
     )
     if existing:
-        raise HTTPException(status_code=400, detail=f"Symbol '{request.symbol}' already exists")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Symbol '{request.symbol}' with engine_type CLOB already exists"
+        )
 
     # Ensure settle is set (defaults to quote_asset)
     settle_asset = request.settle if request.settle else request.quote_asset
@@ -103,13 +108,18 @@ async def create_pool(
     """
     db = get_db()
 
-    # Check if symbol already exists
+    # Check if symbol + engine_type (AMM) combination already exists
+    # (Same symbol can exist with different engine types for arbitrage)
     existing = await db.read_one(
-        "SELECT symbol_id FROM symbol_configs WHERE symbol = $1",
+        "SELECT symbol_id FROM symbol_configs WHERE symbol = $1 AND engine_type = $2",
         request.symbol,
+        EngineType.AMM.value,
     )
     if existing:
-        raise HTTPException(status_code=400, detail=f"Symbol '{request.symbol}' already exists")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Symbol '{request.symbol}' with engine_type AMM already exists"
+        )
 
     # Ensure settle is set (defaults to quote_asset)
     settle_asset = request.settle if request.settle else request.quote_asset

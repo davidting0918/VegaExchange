@@ -6,12 +6,14 @@ All endpoints require authentication via JWT token.
 """
 
 from decimal import Decimal
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
 from backend.core.auth import get_current_user, get_current_user_id
 from backend.core.balance_utils import get_user_balance as get_user_balance_util, get_user_balances as get_user_balances_util
 from backend.core.db_manager import get_db
+from backend.models.enums import EngineType
 from backend.models.responses import APIResponse
 
 router = APIRouter(prefix="/api/user", tags=["user"])
@@ -61,24 +63,39 @@ async def get_user_balance(
 @router.get("/trades", response_model=APIResponse)
 async def get_user_trades(
     user_id: str = Depends(get_current_user_id),
+    symbol: Optional[str] = Query(None, description="Filter by symbol"),
+    engine_type: Optional[EngineType] = Query(None, description="Filter by engine type"),
     limit: int = Query(50, ge=1, le=200, description="Max results"),
 ):
     """
-    Get user's trade history across all symbols.
+    Get user's trade history.
+    
+    Can filter by symbol and engine type.
     """
     db = get_db()
 
-    trades = await db.read(
-        """
+    query = """
         SELECT t.*, sc.symbol FROM trades t
         JOIN symbol_configs sc USING (symbol_id)
         WHERE t.user_id = $1
-        ORDER BY t.created_at DESC
-        LIMIT $2
-        """,
-        user_id,
-        limit,
-    )
+    """
+    params = [user_id]
+    param_idx = 2
+
+    if symbol:
+        query += f" AND sc.symbol = ${param_idx}"
+        params.append(symbol.upper())
+        param_idx += 1
+
+    if engine_type is not None:
+        query += f" AND t.engine_type = ${param_idx}"
+        params.append(engine_type.value)
+        param_idx += 1
+
+    query += f" ORDER BY t.created_at DESC LIMIT ${param_idx}"
+    params.append(limit)
+
+    trades = await db.read(query, *params)
 
     return APIResponse(success=True, data=trades)
 
