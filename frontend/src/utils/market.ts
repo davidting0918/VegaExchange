@@ -1,6 +1,88 @@
 import type { Symbol } from '../types'
 
 /**
+ * Symbol path components for URL routing
+ */
+export interface SymbolPathComponents {
+  base: string
+  quote: string
+  settle: string
+  market: string
+}
+
+/**
+ * Parse symbol string into path components
+ * Symbol format: {BASE}/{QUOTE}-{SETTLE}:{MARKET}
+ * Example: "AMM/USDT-USDT:SPOT" -> { base: "AMM", quote: "USDT", settle: "USDT", market: "SPOT" }
+ */
+export function parseSymbolToPath(symbolStr: string): SymbolPathComponents | null {
+  // Format: BASE/QUOTE-SETTLE:MARKET
+  const match = symbolStr.match(/^([^/]+)\/([^-]+)-([^:]+):(.+)$/)
+  if (!match) return null
+  
+  return {
+    base: match[1].toUpperCase(),
+    quote: match[2].toUpperCase(),
+    settle: match[3].toUpperCase(),
+    market: match[4].toUpperCase(),
+  }
+}
+
+/**
+ * Build symbol string from path components
+ */
+export function buildSymbolFromPath(components: SymbolPathComponents): string {
+  return `${components.base}/${components.quote}-${components.settle}:${components.market}`
+}
+
+/**
+ * Build API path for pool endpoints
+ * Returns: "{base}/{quote}/{settle}/{market}"
+ */
+export function toPoolApiPath(symbolStr: string): string {
+  const parts = parseSymbolToPath(symbolStr)
+  if (!parts) {
+    // Fallback: just return the symbol as-is
+    return symbolStr
+  }
+  return `${parts.base}/${parts.quote}/${parts.settle}/${parts.market}`
+}
+
+/**
+ * Build frontend URL path for pool page
+ * Returns: "/pools/{base}/{quote}/{settle}/{market}"
+ */
+export function toPoolUrlPath(symbol: Symbol | string): string {
+  const symbolStr = typeof symbol === 'string' ? symbol : symbol.symbol
+  const parts = parseSymbolToPath(symbolStr)
+  if (!parts) {
+    // Fallback for simple symbol format
+    if (typeof symbol === 'object') {
+      return `/pools/${symbol.base}/${symbol.quote}/${symbol.settle || symbol.quote}/${symbol.market || 'SPOT'}`
+    }
+    return `/pools/${symbolStr}`
+  }
+  return `/pools/${parts.base}/${parts.quote}/${parts.settle}/${parts.market}`
+}
+
+/**
+ * Build frontend URL path for market page (CLOB)
+ * Returns: "/market/{base}/{quote}/{settle}/{market}"
+ */
+export function toMarketUrlPath(symbol: Symbol | string): string {
+  const symbolStr = typeof symbol === 'string' ? symbol : symbol.symbol
+  const parts = parseSymbolToPath(symbolStr)
+  if (!parts) {
+    // Fallback for simple symbol format
+    if (typeof symbol === 'object') {
+      return `/market/${symbol.base}/${symbol.quote}/${symbol.settle || symbol.quote}/${symbol.market || 'SPOT'}`
+    }
+    return `/market/${symbolStr}`
+  }
+  return `/market/${parts.base}/${parts.quote}/${parts.settle}/${parts.market}`
+}
+
+/**
  * Convert symbol config to URL-safe market ID
  * Format: {base}-{quote}-{market}
  * Example: ETH-USDT-SPOT

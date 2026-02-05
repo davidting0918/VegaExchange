@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { LoadingSpinner } from './LoadingSpinner'
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'success' | 'danger'
+  variant?: 'primary' | 'secondary' | 'success' | 'danger' | 'ghost'
   size?: 'sm' | 'md' | 'lg'
   isLoading?: boolean
   fullWidth?: boolean
@@ -27,6 +27,7 @@ export const Button: React.FC<ButtonProps> = ({
     secondary: 'bg-bg-tertiary text-text-primary border border-border-default hover:border-border-hover',
     success: 'bg-accent-green text-white hover:bg-opacity-90',
     danger: 'bg-accent-red text-white hover:bg-opacity-90',
+    ghost: 'bg-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary',
   }
 
   const sizeStyles = {

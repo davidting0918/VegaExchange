@@ -16,7 +16,16 @@ class AuthService {
     return response.data
   }
 
-  // Google login
+  // Unified Google auth (login or register)
+  // Send the Google ID token, backend handles login or registration automatically
+  async authWithGoogle(idToken: string): Promise<ApiResponse<TokenResponse & { is_new_user: boolean }>> {
+    const response = await apiClient.post(`${this.basePath}/google`, {
+      id_token: idToken,
+    })
+    return response.data
+  }
+
+  // [DEPRECATED] Use authWithGoogle instead
   async loginWithGoogle(googleId: string): Promise<ApiResponse<TokenResponse>> {
     const response = await apiClient.post(`${this.basePath}/login`, null, {
       params: { google_id: googleId },
@@ -39,7 +48,7 @@ class AuthService {
     return response.data
   }
 
-  // Google registration
+  // [DEPRECATED] Use authWithGoogle instead
   async registerWithGoogle(
     googleId: string,
     email: string,

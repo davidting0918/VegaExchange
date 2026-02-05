@@ -9,9 +9,10 @@ from backend.core.db_manager import get_db
 
 # Default initial balances for new users
 DEFAULT_BALANCES = {
-    "USDT": Decimal("100000"),  # 100,000 USDT
+    "USDT": Decimal("1000000"),  # 100,000 USDT
     "ORDER": Decimal("1000"),  # 1000 ORDER (for ORDER-USDT trading)
     "AMM": Decimal("1000"),  # 1000 AMM (for AMM-USDT trading)
+    "VEGA": Decimal("10000"),  # 100,000,000 VEGA (for VEGA-USDT trading)
 }
 
 

@@ -5,6 +5,8 @@ import { LoginPage } from './components/auth/LoginPage'
 import { RegisterPage } from './components/auth/RegisterPage'
 import { DashboardPage } from './components/dashboard/DashboardPage'
 import { TradingPage } from './components/trading/TradingPage'
+import { PoolDetailPage } from './components/pool/PoolDetailPage'
+import { MarketPage } from './components/market/MarketPage'
 import { LoadingSpinner } from './components/common/LoadingSpinner'
 
 // Protected route wrapper
@@ -82,6 +84,8 @@ function App() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="trade" element={<TradingPage />} />
         <Route path="trade/:marketId" element={<TradingPage />} />
+        <Route path="pools/:base/:quote/:settle/:market" element={<PoolDetailPage />} />
+        <Route path="market/:base/:quote/:settle/:market" element={<MarketPage />} />
       </Route>
 
       {/* Catch all */}

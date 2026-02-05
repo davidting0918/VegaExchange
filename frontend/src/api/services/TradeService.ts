@@ -11,15 +11,19 @@ import type {
   LPPosition,
   LPEvent,
 } from '../../types'
+import { toPoolApiPath } from '../../utils/market'
 
 class TradeService {
-  private basePath = '/api/trade'
+  // Convert symbol to pool API path format: {base}/{quote}/{settle}/{market}
+  private toPoolPath(symbol: string): string {
+    return toPoolApiPath(symbol)
+  }
 
-  // Get trade quote (preview)
+  // Get trade quote (preview) - AMM only
   async getQuote(request: QuoteRequest): Promise<ApiResponse<QuoteResponse>> {
-    // Backend expects: symbol, side, quantity (base) or quote_amount (quote)
+    // New endpoint: GET /api/pool/{symbol}/quote
+    // Query params: side, quantity (base) or quote_amount (quote)
     const params: Record<string, string> = {
-      symbol: request.symbol,
       side: request.side,
     }
     
@@ -30,7 +34,10 @@ class TradeService {
       params.quantity = request.amount
     }
     
-    const response = await apiClient.get(`${this.basePath}/quote`, { params })
+    const response = await apiClient.get(
+      `/api/pool/${this.toPoolPath(request.symbol)}/quote`,
+      { params }
+    )
     const data = response.data
     
     // Transform backend response to match QuoteResponse type
@@ -53,10 +60,10 @@ class TradeService {
     return data
   }
 
-  // Execute swap
+  // Execute swap - AMM only
   async swap(request: SwapRequest): Promise<ApiResponse<Trade>> {
-    // Transform frontend request to backend format
-    // Backend expects: symbol, side, amount_in, min_amount_out
+    // New endpoint: POST /api/pool/{symbol}/swap
+    // Body: { symbol, side, amount_in, min_amount_out }
     const backendRequest = {
       symbol: request.symbol,
       side: request.side,
@@ -64,27 +71,39 @@ class TradeService {
       min_amount_out: request.min_output,
     }
     
-    const response = await apiClient.post(`${this.basePath}/swap`, backendRequest)
+    const response = await apiClient.post(
+      `/api/pool/${this.toPoolPath(request.symbol)}/swap`,
+      backendRequest
+    )
     return response.data
   }
 
   // Add liquidity to AMM pool
   async addLiquidity(request: AddLiquidityRequest): Promise<ApiResponse<LiquidityResponse>> {
-    const response = await apiClient.post(`${this.basePath}/liquidity/add`, request)
+    // New endpoint: POST /api/pool/{symbol}/liquidity/add
+    const response = await apiClient.post(
+      `/api/pool/${this.toPoolPath(request.symbol)}/liquidity/add`,
+      request
+    )
     return response.data
   }
 
   // Remove liquidity from AMM pool
   async removeLiquidity(request: RemoveLiquidityRequest): Promise<ApiResponse<LiquidityResponse>> {
-    const response = await apiClient.post(`${this.basePath}/liquidity/remove`, request)
+    // New endpoint: POST /api/pool/{symbol}/liquidity/remove
+    const response = await apiClient.post(
+      `/api/pool/${this.toPoolPath(request.symbol)}/liquidity/remove`,
+      request
+    )
     return response.data
   }
 
   // Get user's LP position for a pool
   async getLPPosition(symbol: string): Promise<ApiResponse<LPPosition>> {
-    const response = await apiClient.get(`${this.basePath}/liquidity/position`, {
-      params: { symbol },
-    })
+    // New endpoint: GET /api/pool/{symbol}/liquidity/position
+    const response = await apiClient.get(
+      `/api/pool/${this.toPoolPath(symbol)}/liquidity/position`
+    )
     const data = response.data
     
     // Transform backend response to match LPPosition type
@@ -109,19 +128,31 @@ class TradeService {
 
   // Get liquidity event history
   async getLPHistory(symbol: string, limit: number = 50): Promise<ApiResponse<LPEvent[]>> {
-    const response = await apiClient.get(`${this.basePath}/liquidity/history`, {
-      params: { symbol, limit },
-    })
-    return response.data
+    // New endpoint: GET /api/pool/{symbol}/liquidity/history
+    // Note: limit is not supported by the new endpoint, but we keep the param for future use
+    const response = await apiClient.get(
+      `/api/pool/${this.toPoolPath(symbol)}/liquidity/history`
+    )
+    const data = response.data
+    
+    // Extract events array from response
+    if (data.success && data.data?.events) {
+      return {
+        success: true,
+        data: data.data.events.slice(0, limit),
+      }
+    }
+    return data
   }
 
-  // Get user's trade history
+  // Get user's trade history - now uses /api/user/trades
   async getTradeHistory(
     symbol?: string,
     engineType?: number,
     limit: number = 50
   ): Promise<ApiResponse<Trade[]>> {
-    const response = await apiClient.get(`${this.basePath}/history`, {
+    // New endpoint: GET /api/user/trades
+    const response = await apiClient.get('/api/user/trades', {
       params: {
         symbol,
         engine_type: engineType,

@@ -122,9 +122,11 @@ CREATE INDEX idx_user_balances_currency ON user_balances(currency);
 -- =====================================================
 -- SYMBOL CONFIGURATIONS TABLE
 -- =====================================================
+-- Same symbol can exist with different engine_types for arbitrage opportunities
+-- e.g., VEGA/USDT-USDT:SPOT can be traded on both AMM and CLOB
 CREATE TABLE IF NOT EXISTS symbol_configs (
     symbol_id SERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL UNIQUE,
+    symbol VARCHAR(40) NOT NULL,  -- Format: {BASE}/{QUOTE}-{SETTLE}:{MARKET} e.g., VEGA/USDT-USDT:SPOT
     market VARCHAR(20) NOT NULL,  -- spot, perp, option, future
     base VARCHAR(20) NOT NULL,
     quote VARCHAR(20) NOT NULL,
@@ -143,11 +145,15 @@ CREATE TABLE IF NOT EXISTS symbol_configs (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     settled_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
     
-    CONSTRAINT unique_symbol_config UNIQUE (market, base, quote, settle, settled_at)
+    -- Same symbol can have different engine types (for arbitrage)
+    -- But same symbol + engine_type combination must be unique
+    CONSTRAINT unique_symbol_engine UNIQUE (symbol, engine_type),
+    CONSTRAINT unique_symbol_config UNIQUE (market, base, quote, settle, engine_type, settled_at)
 );
 
 CREATE INDEX idx_symbol_configs_symbol ON symbol_configs(symbol);
 CREATE INDEX idx_symbol_configs_engine_type ON symbol_configs(engine_type);
+CREATE INDEX idx_symbol_configs_symbol_engine ON symbol_configs(symbol, engine_type);
 
 -- =====================================================
 -- AMM POOLS TABLE

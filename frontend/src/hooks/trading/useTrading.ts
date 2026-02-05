@@ -27,12 +27,13 @@ export const useTrading = () => {
   }, [dispatch])
 
   const selectSymbol = useCallback(
-    async (symbol: string) => {
+    async (symbol: string, engineType: number = 0) => {
       dispatch(setCurrentSymbol(symbol))
       // Load pool info and recent trades
+      // engineType: 0 = AMM, 1 = CLOB
       await Promise.all([
         dispatch(fetchPoolInfo(symbol)),
-        dispatch(fetchRecentTrades(symbol)),
+        dispatch(fetchRecentTrades({ symbol, engineType, limit: 20 })),
         isAuthenticated ? dispatch(fetchLPPosition(symbol)) : Promise.resolve(),
       ])
     },
@@ -43,7 +44,7 @@ export const useTrading = () => {
     if (!tradingState.currentSymbol) return
     await Promise.all([
       dispatch(fetchPoolInfo(tradingState.currentSymbol)),
-      dispatch(fetchRecentTrades(tradingState.currentSymbol)),
+      dispatch(fetchRecentTrades({ symbol: tradingState.currentSymbol, engineType: 0, limit: 20 })),
       isAuthenticated ? dispatch(fetchLPPosition(tradingState.currentSymbol)) : Promise.resolve(),
     ])
   }, [dispatch, tradingState.currentSymbol, isAuthenticated])

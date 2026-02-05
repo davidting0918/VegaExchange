@@ -141,3 +141,79 @@ export interface TradingState {
   isQuoteLoading: boolean
   error: string | null
 }
+
+// ============== CLOB Orderbook Types ==============
+
+// Orderbook level (single price level)
+export interface OrderbookLevel {
+  price: string
+  quantity: string
+  total?: string // Cumulative quantity
+}
+
+// Full orderbook data
+export interface Orderbook {
+  symbol: string
+  bids: OrderbookLevel[]
+  asks: OrderbookLevel[]
+  timestamp?: string
+}
+
+// Order types
+export type OrderType = 'market' | 'limit'
+export type OrderStatus = 'pending' | 'partial' | 'filled' | 'cancelled'
+
+// User order
+export interface Order {
+  order_id: string
+  symbol: string
+  side: TradeSide
+  order_type: OrderType
+  price: string
+  quantity: string
+  filled_quantity: string
+  remaining_quantity: string
+  status: OrderStatus
+  created_at: string
+  updated_at?: string
+}
+
+// Place order request
+export interface PlaceOrderRequest {
+  symbol: string
+  side: TradeSide
+  order_type: OrderType
+  price?: string // Required for limit orders
+  quantity: string
+}
+
+// Cancel order request
+export interface CancelOrderRequest {
+  symbol: string
+  order_id: string
+}
+
+// ============== Chart Data Types ==============
+
+// Price data point for charts
+export interface PriceDataPoint {
+  time: number // Unix timestamp
+  value: number
+}
+
+// Candlestick data for trading charts
+export interface CandlestickData {
+  time: number // Unix timestamp
+  open: number
+  high: number
+  low: number
+  close: number
+  volume?: number
+}
+
+// Volume data for bar charts
+export interface VolumeDataPoint {
+  time: string // Date string for display
+  volume: number
+  label?: string
+}
