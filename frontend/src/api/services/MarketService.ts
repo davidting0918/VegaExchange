@@ -1,6 +1,6 @@
 import { apiClient } from '../client'
 import type { ApiResponse, Symbol, PoolInfo, Trade } from '../../types'
-import { toPoolApiPath } from '../../utils/market'
+import { toPoolApiPath, parseSymbolToPath } from '../../utils/market'
 
 // Market data response
 interface MarketData {
@@ -24,7 +24,7 @@ const ENGINE_TYPE = {
 class MarketService {
   private basePath = '/api/market'
 
-  // Convert symbol to pool API path format: {base}/{quote}/{settle}/{market}
+  // Convert symbol to pool API path format: {base}-{quote}-{settle}-{market}
   private toPoolPath(symbol: string): string {
     return toPoolApiPath(symbol)
   }
@@ -82,7 +82,7 @@ class MarketService {
     return response.data
   }
 
-  // Get AMM pool data - uses /api/pool/{base}/{quote}/{settle}/{market}
+  // Get AMM pool data - uses /api/pool/{base}-{quote}-{settle}-{market}
   async getPoolData(symbol: string): Promise<ApiResponse<PoolInfo>> {
     const response = await apiClient.get(`/api/pool/${this.toPoolPath(symbol)}`)
     const data = response.data
@@ -90,17 +90,19 @@ class MarketService {
     // Transform backend response to match PoolInfo type
     if (data.success && data.data) {
       const poolData = data.data
-      // Extract base/quote from symbol (e.g., "ETH_USDT" -> base="ETH", quote="USDT")
-      const [base, quote] = poolData.symbol.split('_')
-      
+      // Use explicit base/quote/settle/market from backend when provided; otherwise parse symbol (format: BASE/QUOTE-SETTLE:MARKET)
+      const parsed = parseSymbolToPath(poolData.symbol)
+      const base = poolData.base ?? parsed?.base ?? ''
+      const quote = poolData.quote ?? parsed?.quote ?? ''
+
       return {
         success: true,
         data: {
           pool_id: poolData.pool_id || '',
           symbol_id: poolData.symbol_id || 0,
           symbol: poolData.symbol,
-          base: base || '',
-          quote: quote || '',
+          base,
+          quote,
           reserve_base: String(poolData.reserve_base),
           reserve_quote: String(poolData.reserve_quote),
           k_value: String(poolData.k_value),
@@ -117,7 +119,7 @@ class MarketService {
   }
 
   // Get recent trades for a symbol
-  // Uses /api/pool/{base}/{quote}/{settle}/{market}/trades for AMM or /api/orderbook/{symbol}/trades for CLOB
+  // Uses /api/pool/{base}-{quote}-{settle}-{market}/trades for AMM or /api/orderbook/{symbol}/trades for CLOB
   async getRecentTrades(
     symbol: string,
     engineType: number = ENGINE_TYPE.AMM,
@@ -133,11 +135,19 @@ class MarketService {
     })
     const data = response.data
     
-    // Backend returns { symbol, trades: [...] }, extract trades array
+    // Backend returns { symbol, trades: [...] }; side is 0 (BUY) or 1 (SELL), normalize to 'buy' | 'sell'
     if (data.success && data.data?.trades) {
+      const trades = (data.data.trades as Array<Record<string, unknown>>).map((t) => ({
+        ...t,
+        side: t.side === 0 ? 'buy' : 'sell',
+        price: t.price != null ? String(t.price) : '0',
+        quantity: t.quantity != null ? String(t.quantity) : '0',
+        quote_amount: t.quote_amount != null ? String(t.quote_amount) : '0',
+        fee_amount: t.fee_amount != null ? String(t.fee_amount) : '0',
+      }))
       return {
         success: true,
-        data: data.data.trades,
+        data: trades as Trade[],
       }
     }
     return data
@@ -166,9 +176,25 @@ class MarketService {
     const data = response.data
     
     if (data.success && data.data?.pools) {
+      const pools = data.data.pools as Array<Record<string, unknown>>
       return {
         success: true,
-        data: data.data.pools,
+        data: pools.map((p) => ({
+          pool_id: String(p.pool_id ?? ''),
+          symbol_id: Number(p.symbol_id ?? 0),
+          symbol: String(p.symbol ?? ''),
+          base: String(p.base ?? ''),
+          quote: String(p.quote ?? ''),
+          reserve_base: String(p.reserve_base ?? 0),
+          reserve_quote: String(p.reserve_quote ?? 0),
+          k_value: String(p.k_value ?? 0),
+          fee_rate: String(p.fee_rate ?? 0),
+          total_lp_shares: String(p.total_lp_shares ?? 0),
+          total_volume_base: String(p.total_volume_base ?? 0),
+          total_volume_quote: String(p.total_volume_quote ?? 0),
+          total_fees_collected: String(p.total_fees_collected ?? 0),
+          current_price: String(p.current_price ?? 0),
+        })),
       }
     }
     return data

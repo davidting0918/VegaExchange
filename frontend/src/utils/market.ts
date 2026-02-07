@@ -37,7 +37,8 @@ export function buildSymbolFromPath(components: SymbolPathComponents): string {
 
 /**
  * Build API path for pool endpoints
- * Returns: "{base}/{quote}/{settle}/{market}"
+ * Returns: "{base}-{quote}-{settle}-{market}"
+ * Example: "AMM-USDT-USDT-SPOT"
  */
 export function toPoolApiPath(symbolStr: string): string {
   const parts = parseSymbolToPath(symbolStr)
@@ -45,7 +46,7 @@ export function toPoolApiPath(symbolStr: string): string {
     // Fallback: just return the symbol as-is
     return symbolStr
   }
-  return `${parts.base}/${parts.quote}/${parts.settle}/${parts.market}`
+  return `${parts.base}-${parts.quote}-${parts.settle}-${parts.market}`
 }
 
 /**

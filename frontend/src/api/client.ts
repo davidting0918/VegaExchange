@@ -40,6 +40,17 @@ class ApiClient {
     this.refreshSubscribers = []
   }
 
+  private logApiError(error: AxiosError) {
+    if (!error.response) return
+    console.error('[API Error]', {
+      method: error.config?.method?.toUpperCase(),
+      url: error.config?.url,
+      baseURL: error.config?.baseURL,
+      status: error.response?.status,
+      data: error.response?.data,
+    })
+  }
+
   private setupInterceptors() {
     // Request interceptor - add auth token
     this.client.interceptors.request.use(
@@ -128,6 +139,7 @@ class ApiClient {
               this.onRefreshFailed()
               this.isRefreshing = false
               this.handleLogout()
+              this.logApiError(error)
               return Promise.reject(error)
             }
           } else {
@@ -136,6 +148,7 @@ class ApiClient {
           }
         }
 
+        this.logApiError(error)
         return Promise.reject(error)
       }
     )

@@ -6,6 +6,7 @@ import type {
   SwapRequest,
   Trade,
   AddLiquidityRequest,
+  AddLiquidityQuoteResponse,
   RemoveLiquidityRequest,
   LiquidityResponse,
   LPPosition,
@@ -14,17 +15,22 @@ import type {
 import { toPoolApiPath } from '../../utils/market'
 
 class TradeService {
-  // Convert symbol to pool API path format: {base}/{quote}/{settle}/{market}
+  // Convert symbol to pool API path format: {base}-{quote}-{settle}-{market}
   private toPoolPath(symbol: string): string {
     return toPoolApiPath(symbol)
   }
 
+  // Convert side string to integer (backend expects IntEnum: BUY=0, SELL=1)
+  private sideToInt(side: string): number {
+    return side.toLowerCase() === 'buy' ? 0 : 1
+  }
+
   // Get trade quote (preview) - AMM only
   async getQuote(request: QuoteRequest): Promise<ApiResponse<QuoteResponse>> {
-    // New endpoint: GET /api/pool/{symbol}/quote
-    // Query params: side, quantity (base) or quote_amount (quote)
-    const params: Record<string, string> = {
-      side: request.side,
+    // Endpoint: GET /api/pool/{symbol_path}/quote where symbol_path = {base}-{quote}-{settle}-{market}
+    // Query params: side (0=buy, 1=sell), quantity (base) or quote_amount (quote)
+    const params: Record<string, string | number> = {
+      side: this.sideToInt(request.side),
     }
     
     // Determine which parameter to use based on amount_type
@@ -62,47 +68,68 @@ class TradeService {
 
   // Execute swap - AMM only
   async swap(request: SwapRequest): Promise<ApiResponse<Trade>> {
-    // New endpoint: POST /api/pool/{symbol}/swap
-    // Body: { symbol, side, amount_in, min_amount_out }
-    const backendRequest = {
+    // POST /api/pool/swap - symbol is in the request body
+    const backendRequest: Record<string, unknown> = {
       symbol: request.symbol,
-      side: request.side,
+      side: this.sideToInt(request.side),
       amount_in: request.amount,
-      min_amount_out: request.min_output,
     }
-    
-    const response = await apiClient.post(
-      `/api/pool/${this.toPoolPath(request.symbol)}/swap`,
-      backendRequest
-    )
+    if (request.min_output != null && request.min_output !== '') {
+      backendRequest.min_amount_out = request.min_output
+    }
+
+    const response = await apiClient.post('/api/pool/swap', backendRequest)
     return response.data
+  }
+
+  // Get quote for adding liquidity (given base_amount returns quote_amount, or vice versa)
+  async getAddLiquidityQuote(
+    symbol: string,
+    baseAmount?: string,
+    quoteAmount?: string
+  ): Promise<ApiResponse<AddLiquidityQuoteResponse>> {
+    const params: Record<string, string> = {}
+    if (baseAmount != null && baseAmount !== '') params.base_amount = baseAmount
+    else if (quoteAmount != null && quoteAmount !== '') params.quote_amount = quoteAmount
+    else throw new Error('Provide base_amount or quote_amount')
+
+    const response = await apiClient.get(
+      `/api/pool/${this.toPoolPath(symbol)}/liquidity/add/quote`,
+      { params }
+    )
+    const data = response.data
+    if (data.success && data.data) {
+      const q = data.data
+      return {
+        success: true,
+        data: {
+          base_amount: String(q.base_amount),
+          quote_amount: String(q.quote_amount),
+        },
+      }
+    }
+    return data
   }
 
   // Add liquidity to AMM pool
   async addLiquidity(request: AddLiquidityRequest): Promise<ApiResponse<LiquidityResponse>> {
-    // New endpoint: POST /api/pool/{symbol}/liquidity/add
-    const response = await apiClient.post(
-      `/api/pool/${this.toPoolPath(request.symbol)}/liquidity/add`,
-      request
-    )
+    // POST /api/pool/liquidity/add - symbol is in the request body
+    const response = await apiClient.post('/api/pool/liquidity/add', request)
     return response.data
   }
 
   // Remove liquidity from AMM pool
   async removeLiquidity(request: RemoveLiquidityRequest): Promise<ApiResponse<LiquidityResponse>> {
-    // New endpoint: POST /api/pool/{symbol}/liquidity/remove
-    const response = await apiClient.post(
-      `/api/pool/${this.toPoolPath(request.symbol)}/liquidity/remove`,
-      request
-    )
+    // POST /api/pool/liquidity/remove - symbol is in the request body
+    const response = await apiClient.post('/api/pool/liquidity/remove', request)
     return response.data
   }
 
   // Get user's LP position for a pool
   async getLPPosition(symbol: string): Promise<ApiResponse<LPPosition>> {
-    // New endpoint: GET /api/pool/{symbol}/liquidity/position
+    // Endpoint: GET /api/pool/liquidity/position/{symbol_path}
     const response = await apiClient.get(
-      `/api/pool/${this.toPoolPath(symbol)}/liquidity/position`
+      `/api/pool/liquidity/position/${this.toPoolPath(symbol)}`
     )
     const data = response.data
     
@@ -128,10 +155,10 @@ class TradeService {
 
   // Get liquidity event history
   async getLPHistory(symbol: string, limit: number = 50): Promise<ApiResponse<LPEvent[]>> {
-    // New endpoint: GET /api/pool/{symbol}/liquidity/history
+    // Endpoint: GET /api/pool/liquidity/history/{symbol_path}
     // Note: limit is not supported by the new endpoint, but we keep the param for future use
     const response = await apiClient.get(
-      `/api/pool/${this.toPoolPath(symbol)}/liquidity/history`
+      `/api/pool/liquidity/history/${this.toPoolPath(symbol)}`
     )
     const data = response.data
     

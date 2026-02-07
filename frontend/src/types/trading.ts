@@ -91,6 +91,19 @@ export interface AddLiquidityRequest {
   quote_amount: string
 }
 
+// Add liquidity quote request (provide one of base_amount or quote_amount)
+export interface AddLiquidityQuoteRequest {
+  symbol: string
+  base_amount?: string
+  quote_amount?: string
+}
+
+// Add liquidity quote response
+export interface AddLiquidityQuoteResponse {
+  base_amount: string
+  quote_amount: string
+}
+
 // Remove liquidity request (backend expects lp_shares, not percentage)
 export interface RemoveLiquidityRequest {
   symbol: string

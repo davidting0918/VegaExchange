@@ -7,7 +7,7 @@ BigNumber.config({
 })
 
 /**
- * Format a number with specified decimal places
+ * Format a number with specified decimal places and thousand separators
  */
 export function formatNumber(
   value: string | number | BigNumber,
@@ -21,7 +21,7 @@ export function formatNumber(
   if (trimZeros) {
     formatted = formatted.replace(/\.?0+$/, '')
   }
-  return formatted
+  return addThousandsSeparator(formatted)
 }
 
 /**
@@ -36,7 +36,7 @@ export function formatUSD(value: string | number | BigNumber, decimals: number =
 }
 
 /**
- * Format crypto amount with appropriate precision
+ * Format crypto amount with appropriate precision and thousand separators
  */
 export function formatCrypto(
   value: string | number | BigNumber,
@@ -53,7 +53,8 @@ export function formatCrypto(
   else if (bn.gte(0.01)) decimals = 6
 
   const formatted = bn.toFixed(decimals).replace(/\.?0+$/, '')
-  return symbol ? `${formatted} ${symbol}` : formatted
+  const withSeparator = addThousandsSeparator(formatted)
+  return symbol ? `${withSeparator} ${symbol}` : withSeparator
 }
 
 /**
