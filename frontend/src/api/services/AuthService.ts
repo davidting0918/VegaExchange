@@ -1,4 +1,4 @@
-import { apiClient } from '../client'
+import { apiClient, refreshAccessToken } from '../client'
 import type {
   ApiResponse,
   EmailLoginRequest,
@@ -75,13 +75,13 @@ class AuthService {
     return response.data
   }
 
-  // Refresh token
-  async refreshToken(request: RefreshTokenRequest): Promise<ApiResponse<TokenResponse>> {
-    // Backend expects refresh_token as query parameter
-    const response = await apiClient.post(
-      `${this.basePath}/refresh?refresh_token=${encodeURIComponent(request.refresh_token)}`
-    )
-    return response.data
+  // Refresh token - uses shared refresh so only one request runs (avoids 401 when backend invalidates token)
+  async refreshToken(_request: RefreshTokenRequest): Promise<ApiResponse<TokenResponse>> {
+    const result = await refreshAccessToken()
+    if (result) {
+      return { success: true, data: { access_token: result.access_token, refresh_token: result.refresh_token } }
+    }
+    throw new Error('Refresh failed')
   }
 
   // Logout

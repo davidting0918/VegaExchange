@@ -57,7 +57,7 @@ async def get_user_balances(user_id: str, include_total: bool = True) -> List[di
             """
             SELECT currency, available, locked, (available + locked) as total
             FROM user_balances
-            WHERE user_id = $1
+            WHERE user_id = $1 AND account_type = 'spot'
             ORDER BY currency
             """,
             user_id,
@@ -67,7 +67,7 @@ async def get_user_balances(user_id: str, include_total: bool = True) -> List[di
             """
             SELECT currency, available, locked
             FROM user_balances
-            WHERE user_id = $1
+            WHERE user_id = $1 AND account_type = 'spot'
             ORDER BY currency
             """,
             user_id,
@@ -93,7 +93,7 @@ async def get_user_balance(user_id: str, asset: str) -> Optional[dict]:
         """
         SELECT currency, available, locked, (available + locked) as total
         FROM user_balances
-        WHERE user_id = $1 AND currency = $2
+        WHERE user_id = $1 AND account_type = 'spot' AND currency = $2
         """,
         user_id,
         asset.upper(),

@@ -5,6 +5,33 @@ import type { PoolInfo, QuoteResponse, TradeSide } from '../../types'
 
 type ActiveInput = 'base' | 'quote'
 
+/**
+ * AMM constant-product inverse: given desired output, estimate required input.
+ * Matches backend: output = (output_reserve * input_after_fee) / (input_reserve + input_after_fee),
+ * input_after_fee = input * (1 - fee_rate). Solve for input.
+ */
+function estimateInputForOutput(
+  pool: PoolInfo,
+  desiredOutput: number,
+  isBuy: boolean
+): string {
+  const rb = parseFloat(pool.reserve_base)
+  const rq = parseFloat(pool.reserve_quote)
+  const fee = parseFloat(pool.fee_rate)
+  if (rb <= 0 || rq <= 0 || desiredOutput <= 0) return ''
+  const oneMinusFee = Math.max(0.0001, 1 - fee)
+  let inputAfterFee: number
+  if (isBuy) {
+    if (desiredOutput >= rb) return ''
+    inputAfterFee = (desiredOutput * rq) / (rb - desiredOutput)
+  } else {
+    if (desiredOutput >= rq) return ''
+    inputAfterFee = (desiredOutput * rb) / (rq - desiredOutput)
+  }
+  const input = inputAfterFee / oneMinusFee
+  return input > 0 ? String(input) : ''
+}
+
 interface SwapPanelProps {
   pool: PoolInfo | null
   quote: QuoteResponse | null
@@ -34,41 +61,57 @@ export const SwapPanel: React.FC<SwapPanelProps> = ({
   /** When true, display quote token on top and base on bottom (e.g. USDT → AMM) */
   const [flipped, setFlipped] = useState(false)
 
-  // Update the non-active field when quote response arrives
+  // Upper = top box, lower = bottom box. Swap always executes upper → lower.
+  const upperAmount = flipped ? quoteAmount : baseAmount
+  const lowerAmount = flipped ? baseAmount : quoteAmount
+  const activeInputIsUpper =
+    (flipped && activeInput === 'quote') || (!flipped && activeInput === 'base')
+
+  // When quote arrives: fill the other field (upper typed → set lower; lower typed → set upper from required input)
   useEffect(() => {
     if (!quote) return
-    const output = quote.output_amount
-    if (activeInput === 'base') {
-      setQuoteAmount(output)
+    if (activeInputIsUpper) {
+      const output = quote.output_amount
+      if (flipped) setBaseAmount(output)
+      else setQuoteAmount(output)
     } else {
-      setBaseAmount(output)
+      const input = quote.input_amount
+      if (flipped) setQuoteAmount(input)
+      else setBaseAmount(input)
     }
-  }, [quote, activeInput])
+  }, [quote, flipped, activeInputIsUpper])
 
-  // Debounced quote fetch - only depends on active input value to avoid re-fetch when we update the other field from quote
-  const activeAmount = activeInput === 'base' ? baseAmount : quoteAmount
+  // Debounced quote fetch: typing in upper → fetch upper→lower; typing in lower → fetch with estimated upper so upper field shows required amount
   useEffect(() => {
     if (!pool) return
 
-    if (!activeAmount || !isValidAmount(activeAmount)) {
-      if (activeInput === 'base') {
-        setQuoteAmount('')
-      } else {
-        setBaseAmount('')
+    if (activeInputIsUpper) {
+      if (!upperAmount || !isValidAmount(upperAmount)) {
+        if (flipped) setBaseAmount('')
+        else setQuoteAmount('')
+        return
       }
-      return
+      const timer = setTimeout(() => {
+        if (flipped) onGetQuote(upperAmount, 'buy', 'quote')
+        else onGetQuote(upperAmount, 'sell', 'base')
+      }, 500)
+      return () => clearTimeout(timer)
     }
 
+    if (!lowerAmount || !isValidAmount(lowerAmount)) {
+      if (flipped) setQuoteAmount('')
+      else setBaseAmount('')
+      return
+    }
+    const desiredOut = parseFloat(lowerAmount)
+    const estimatedUpper = estimateInputForOutput(pool, desiredOut, flipped)
+    if (!estimatedUpper || !isValidAmount(estimatedUpper)) return
     const timer = setTimeout(() => {
-      if (activeInput === 'base') {
-        onGetQuote(activeAmount, 'sell', 'base')
-      } else {
-        onGetQuote(activeAmount, 'buy', 'quote')
-      }
+      if (flipped) onGetQuote(estimatedUpper, 'buy', 'quote')
+      else onGetQuote(estimatedUpper, 'sell', 'base')
     }, 500)
-
     return () => clearTimeout(timer)
-  }, [activeAmount, activeInput, pool, onGetQuote])
+  }, [activeInputIsUpper, upperAmount, lowerAmount, flipped, pool, onGetQuote])
 
   const handleBaseInputChange = (value: string) => {
     const cleaned = parseNumericInput(value)
@@ -100,23 +143,24 @@ export const SwapPanel: React.FC<SwapPanelProps> = ({
   }
 
   const handleSwap = async () => {
-    if (activeInput === 'base') {
-      if (!baseAmount || !isValidAmount(baseAmount)) return
-      await onSwap(baseAmount, 'sell')
-    } else {
+    // Always upper → lower: spend top asset, receive bottom asset
+    if (flipped) {
       if (!quoteAmount || !isValidAmount(quoteAmount)) return
       await onSwap(quoteAmount, 'buy')
+    } else {
+      if (!baseAmount || !isValidAmount(baseAmount)) return
+      await onSwap(baseAmount, 'sell')
     }
     setBaseAmount('')
     setQuoteAmount('')
   }
 
-  const hasValidInput = activeInput === 'base'
-    ? baseAmount && isValidAmount(baseAmount)
-    : quoteAmount && isValidAmount(quoteAmount)
+  const hasValidInput = flipped
+    ? quoteAmount && isValidAmount(quoteAmount)
+    : baseAmount && isValidAmount(baseAmount)
 
-  const fromToken = activeInput === 'base' ? pool?.base : pool?.quote
-  const toToken = activeInput === 'base' ? pool?.quote : pool?.base
+  const fromToken = flipped ? pool?.quote : pool?.base
+  const toToken = flipped ? pool?.base : pool?.quote
 
   const tabs: { id: SwapTab; label: string }[] = [
     { id: 'swap', label: 'Swap' },

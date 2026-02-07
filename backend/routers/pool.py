@@ -6,8 +6,9 @@ Endpoint prefix: /api/pool
 """
 
 import re
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -186,6 +187,152 @@ async def get_pool_trades(
         trades_data["settle"] = settle
         trades_data["market"] = market
     return APIResponse(success=True, data=trades_data)
+
+
+PeriodKind = Literal["1H", "1D", "1W", "1M", "1Y", "ALL"]
+
+
+def _chart_since_and_bucket(period: PeriodKind) -> tuple[datetime, str]:
+    """Return (since_ts in UTC, PostgreSQL date_trunc bucket part for GROUP BY)."""
+    now = datetime.now(timezone.utc)
+    if period == "1H":
+        since = now - timedelta(hours=1)
+        return since, "5min"  # custom 5-min buckets
+    if period == "1D":
+        since = now - timedelta(days=1)
+        return since, "hour"
+    if period == "1W":
+        since = now - timedelta(weeks=1)
+        return since, "day"
+    if period == "1M":
+        since = now - timedelta(days=30)
+        return since, "day"
+    if period == "1Y":
+        since = now - timedelta(days=365)
+        return since, "day"
+    # ALL: last 365 days
+    since = now - timedelta(days=365)
+    return since, "day"
+
+
+@router.get("/{symbol_path}/chart/volume", response_model=APIResponse)
+async def get_pool_volume_chart(
+    symbol_path: str,
+    period: PeriodKind = Query("1D", description="Time range: 1H, 1D, 1W, 1M, 1Y, ALL"),
+    limit: int = Query(100, ge=1, le=500, description="Max number of buckets"),
+):
+    """
+    Get time-bucketed volume for a pool (for bar chart).
+    Public endpoint. Uses completed AMM trades only.
+    """
+    symbol = parse_symbol_path(symbol_path)
+    components = parse_symbol_path_components(symbol_path)
+    db = get_db()
+
+    # Resolve symbol_id for this AMM symbol
+    row = await db.read_one(
+        "SELECT symbol_id FROM symbol_configs WHERE symbol = $1 AND engine_type = 0 AND is_active = TRUE",
+        symbol,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol}' not found")
+
+    symbol_id = row["symbol_id"]
+    since_ts, bucket_kind = _chart_since_and_bucket(period)
+
+    if bucket_kind == "5min":
+        # 5-minute buckets: date_trunc('hour') + floor(minute/5)*5 min
+        bucket_sql = (
+            "date_trunc('hour', t.created_at) + "
+            "(floor(extract(minute from t.created_at) / 5) * interval '5 minutes')"
+        )
+    else:
+        bucket_sql = f"date_trunc('{bucket_kind}', t.created_at)"
+
+    query = f"""
+        SELECT {bucket_sql} AS bucket,
+               COALESCE(SUM(t.quote_amount), 0) AS volume
+        FROM trades t
+        WHERE t.symbol_id = $1 AND t.engine_type = 0 AND t.status = 1
+          AND t.created_at >= $2
+        GROUP BY {bucket_sql}
+        ORDER BY bucket ASC
+        LIMIT $3
+    """
+    rows = await db.read(query, symbol_id, since_ts, limit)
+
+    buckets = [
+        {
+            "time": r["bucket"].isoformat() if hasattr(r["bucket"], "isoformat") else str(r["bucket"]),
+            "volume": float(r["volume"]),
+        }
+        for r in rows
+    ]
+
+    data: dict = {"symbol": symbol, "buckets": buckets}
+    if components:
+        base, quote, settle, market = components
+        data["base"] = base
+        data["quote"] = quote
+        data["settle"] = settle
+        data["market"] = market
+    return APIResponse(success=True, data=data)
+
+
+@router.get("/{symbol_path}/chart/price-history", response_model=APIResponse)
+async def get_pool_price_history(
+    symbol_path: str,
+    period: PeriodKind = Query("1D", description="Time range: 1H, 1D, 1W, 1M, 1Y, ALL"),
+    limit: int = Query(500, ge=1, le=2000, description="Max number of points"),
+):
+    """
+    Get price history for a pool from trade execution prices.
+    Public endpoint. Returns (time, price) series from completed AMM trades.
+    """
+    symbol = parse_symbol_path(symbol_path)
+    components = parse_symbol_path_components(symbol_path)
+    db = get_db()
+
+    row = await db.read_one(
+        "SELECT symbol_id FROM symbol_configs WHERE symbol = $1 AND engine_type = 0 AND is_active = TRUE",
+        symbol,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol}' not found")
+
+    symbol_id = row["symbol_id"]
+    since_ts, _ = _chart_since_and_bucket(period)
+
+    rows = await db.read(
+        """
+        SELECT t.created_at AS time, t.price
+        FROM trades t
+        WHERE t.symbol_id = $1 AND t.engine_type = 0 AND t.status = 1
+          AND t.created_at >= $2
+        ORDER BY t.created_at ASC
+        LIMIT $3
+        """,
+        symbol_id,
+        since_ts,
+        limit,
+    )
+
+    prices = [
+        {
+            "time": r["time"].isoformat() if hasattr(r["time"], "isoformat") else str(r["time"]),
+            "price": float(r["price"]),
+        }
+        for r in rows
+    ]
+
+    data: dict = {"symbol": symbol, "prices": prices}
+    if components:
+        base, quote, settle, market = components
+        data["base"] = base
+        data["quote"] = quote
+        data["settle"] = settle
+        data["market"] = market
+    return APIResponse(success=True, data=data)
 
 
 @router.get("/{symbol_path}/quote", response_model=APIResponse)
@@ -509,7 +656,7 @@ async def get_lp_position(
         "initial_quote_amount": float(position["initial_quote_amount"]),
         "estimated_base_value": float(estimated_base_value),
         "estimated_quote_value": float(estimated_quote_value),
-        "pool_share_percentage": float(share_ratio * 100),
+        "pool_share_percentage": float(share_ratio),  # ratio 0-1; frontend multiplies by 100 for display
         "has_position": True,
     }
     if components:

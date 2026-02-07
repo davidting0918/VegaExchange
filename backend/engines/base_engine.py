@@ -146,7 +146,7 @@ class BaseEngine(ABC):
         required_amount: Decimal,
     ) -> bool:
         """
-        Check if user has sufficient balance for a trade.
+        Check if user has sufficient balance for a trade (spot account).
 
         Args:
             user_id: User ID
@@ -159,7 +159,7 @@ class BaseEngine(ABC):
         balance = await self.db.read_one(
             """
             SELECT available FROM user_balances
-            WHERE user_id = $1 AND currency = $2
+            WHERE user_id = $1 AND account_type = 'spot' AND currency = $2
             """,
             user_id,
             asset,
@@ -178,7 +178,7 @@ class BaseEngine(ABC):
         locked_delta: Decimal = Decimal("0"),
     ) -> bool:
         """
-        Update user's balance for an asset.
+        Update user's balance for an asset (spot account only).
 
         Args:
             user_id: User ID
@@ -187,15 +187,16 @@ class BaseEngine(ABC):
             locked_delta: Change in locked balance (can be negative)
 
         Returns:
-            True if update was successful
+            True if exactly one row was updated
         """
         result = await self.db.execute(
             """
             UPDATE user_balances
             SET available = available + $3,
                 locked = locked + $4,
+                balance = (available + $3) + (locked + $4),
                 updated_at = NOW()
-            WHERE user_id = $1 AND currency = $2
+            WHERE user_id = $1 AND account_type = 'spot' AND currency = $2
             AND available + $3 >= 0
             AND locked + $4 >= 0
             """,
@@ -205,8 +206,8 @@ class BaseEngine(ABC):
             locked_delta,
         )
 
-        # Check if update affected any rows
-        return "UPDATE 1" in result
+        # Require exactly one row updated (avoid "UPDATE 1" in "UPDATE 2" false positive)
+        return result.strip() == "UPDATE 1"
 
     async def ensure_balance_exists(
         self,

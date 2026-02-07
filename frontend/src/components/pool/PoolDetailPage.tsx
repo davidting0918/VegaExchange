@@ -8,27 +8,18 @@ import { AddLiquidityPanel } from './AddLiquidityPanel'
 import { PoolChartSection } from './PoolChartSection'
 import { PoolStatsSidebar } from './PoolStatsSidebar'
 import { LPPieChart } from '../charts'
-import { formatCrypto, formatNumber, formatPercentage, buildSymbolFromPath } from '../../utils'
+import { formatCrypto, formatNumber, formatPercentage, buildSymbolFromPath, parsePoolUrlPath } from '../../utils'
 import type { TradeSide } from '../../types'
 
 export const PoolDetailPage: React.FC = () => {
-  const params = useParams<{
-    base: string
-    quote: string
-    settle: string
-    market: string
-  }>()
+  const { symbolPath } = useParams<{ symbolPath: string }>()
   const navigate = useNavigate()
 
   const decodedSymbol = useMemo(() => {
-    if (!params.base || !params.quote || !params.settle || !params.market) return ''
-    return buildSymbolFromPath({
-      base: params.base,
-      quote: params.quote,
-      settle: params.settle,
-      market: params.market,
-    })
-  }, [params.base, params.quote, params.settle, params.market])
+    const components = symbolPath ? parsePoolUrlPath(symbolPath) : null
+    if (!components) return ''
+    return buildSymbolFromPath(components)
+  }, [symbolPath])
 
   const {
     poolInfo,

@@ -11,6 +11,7 @@ import type {
   LiquidityResponse,
   LPPosition,
   LPEvent,
+  VolumeDataPoint,
 } from '../../types'
 import { toPoolApiPath } from '../../utils/market'
 
@@ -167,6 +168,62 @@ class TradeService {
       return {
         success: true,
         data: data.data.events.slice(0, limit),
+      }
+    }
+    return data
+  }
+
+  // Pool chart: volume by time bucket (public)
+  async getPoolVolumeChart(
+    symbol: string,
+    period: '1H' | '1D' | '1W' | '1M' | '1Y' | 'ALL' = '1D',
+    limit: number = 100
+  ): Promise<ApiResponse<{ buckets: VolumeDataPoint[]; base?: string; quote?: string }>> {
+    const response = await apiClient.get(
+      `/api/pool/${this.toPoolPath(symbol)}/chart/volume`,
+      { params: { period, limit } }
+    )
+    const data = response.data
+    if (data.success && data.data?.buckets) {
+      return {
+        success: true,
+        data: {
+          buckets: data.data.buckets.map((b: { time: string; volume: number }) => ({
+            time: b.time,
+            volume: Number(b.volume),
+          })),
+          base: data.data.base,
+          quote: data.data.quote,
+        },
+      }
+    }
+    return data
+  }
+
+  // Pool chart: price history from trades (public)
+  async getPoolPriceHistory(
+    symbol: string,
+    period: '1H' | '1D' | '1W' | '1M' | '1Y' | 'ALL' = '1D',
+    limit: number = 500
+  ): Promise<
+    ApiResponse<{ prices: { time: string; price: number }[]; base?: string; quote?: string }>
+  > {
+    const response = await apiClient.get(
+      `/api/pool/${this.toPoolPath(symbol)}/chart/price-history`,
+      { params: { period, limit } }
+    )
+    const data = response.data
+    if (data.success && data.data?.prices) {
+      return {
+        success: true,
+        data: {
+          prices: data.data.prices.map((p: { time: string; price: number }) => ({
+            time: p.time,
+            price: Number(p.price),
+          })),
+          base: data.data.base,
+          quote: data.data.quote,
+        },
       }
     }
     return data
