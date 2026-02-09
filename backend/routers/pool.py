@@ -65,14 +65,47 @@ def parse_symbol_string(symbol_str: str) -> tuple[str, str, str, str] | None:
 
 
 @router.get("", response_model=APIResponse)
-async def list_pools(router: EngineRouter = Depends(get_router)):
+async def list_pools(
+    symbol: Optional[str] = Query(None, description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
+    router: EngineRouter = Depends(get_router),
+):
     """
-    List all active AMM pools.
+    List all active AMM pools, or get a single pool when symbol is provided.
     
-    Returns pool configurations and current market data.
+    Query param: symbol - optional. When provided, returns single pool data.
     """
+    if symbol:
+        symbol_str = parse_symbol_path(symbol)
+        components = parse_symbol_path_components(symbol)
+        engine = await router._get_engine(symbol_str, EngineType.AMM)
+        if not engine:
+            raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
+        pool = await engine._get_pool()
+        if not pool:
+            raise HTTPException(status_code=404, detail=f"No pool data for '{symbol_str}'")
+        data: dict = {
+            "symbol": symbol_str,
+            "pool_id": pool["pool_id"],
+            "reserve_base": float(pool["reserve_base"]),
+            "reserve_quote": float(pool["reserve_quote"]),
+            "k_value": float(pool["k_value"]),
+            "fee_rate": float(pool["fee_rate"]),
+            "total_volume_base": float(pool["total_volume_base"]),
+            "total_volume_quote": float(pool["total_volume_quote"]),
+            "total_fees_collected": float(pool["total_fees_collected"]),
+            "total_lp_shares": float(pool["total_lp_shares"]),
+            "current_price": float(pool["reserve_quote"]) / float(pool["reserve_base"])
+            if float(pool["reserve_base"]) > 0 else 0,
+        }
+        if components:
+            base, quote, settle, market = components
+            data["base"] = base
+            data["quote"] = quote
+            data["settle"] = settle
+            data["market"] = market
+        return APIResponse(success=True, data=data)
+
     db = get_db()
-    
     pools = await db.read(
         """
         SELECT sc.symbol, sc.symbol_id, sc.base, sc.quote, sc.settle, sc.market,
@@ -88,7 +121,6 @@ async def list_pools(router: EngineRouter = Depends(get_router)):
         ORDER BY sc.symbol
         """
     )
-    
     return APIResponse(
         success=True,
         data={
@@ -98,68 +130,16 @@ async def list_pools(router: EngineRouter = Depends(get_router)):
     )
 
 
-@router.get("/{symbol_path}", response_model=APIResponse)
-async def get_pool(
-    symbol_path: str,
-    router: EngineRouter = Depends(get_router),
-):
-    """
-    Get AMM pool data for a symbol.
-    
-    Path format: {base}-{quote}-{settle}-{market}
-    Example: /api/pool/AMM-USDT-USDT-SPOT
-    
-    Returns reserve amounts, k value, fee rate, and trading statistics.
-    """
-    symbol = parse_symbol_path(symbol_path)
-    components = parse_symbol_path_components(symbol_path)
-    engine = await router._get_engine(symbol, EngineType.AMM)
-    
-    if not engine:
-        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol}' not found")
-    
-    pool = await engine._get_pool()
-    
-    if not pool:
-        raise HTTPException(status_code=404, detail=f"No pool data for '{symbol}'")
-    
-    data: dict = {
-        "symbol": symbol,
-        "pool_id": pool["pool_id"],
-        "reserve_base": float(pool["reserve_base"]),
-        "reserve_quote": float(pool["reserve_quote"]),
-        "k_value": float(pool["k_value"]),
-        "fee_rate": float(pool["fee_rate"]),
-        "total_volume_base": float(pool["total_volume_base"]),
-        "total_volume_quote": float(pool["total_volume_quote"]),
-        "total_fees_collected": float(pool["total_fees_collected"]),
-        "total_lp_shares": float(pool["total_lp_shares"]),
-        "current_price": float(pool["reserve_quote"]) / float(pool["reserve_base"])
-        if float(pool["reserve_base"]) > 0 else 0,
-    }
-    if components:
-        base, quote, settle, market = components
-        data["base"] = base
-        data["quote"] = quote
-        data["settle"] = settle
-        data["market"] = market
-    
-    return APIResponse(success=True, data=data)
-
-
-@router.get("/{symbol_path}/trades", response_model=APIResponse)
+@router.get("/trades", response_model=APIResponse)
 async def get_pool_trades(
-    symbol_path: str,
-    limit: int = Query(50, ge=1, le=200, description="Number of recent trades"),
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
+    limit: int = Query(100, ge=1, le=200, description="Number of recent trades"),
 ):
     """
     Get recent AMM trades for a symbol.
-    
-    Path format: {base}-{quote}-{settle}-{market}
-    Example: /api/pool/AMM-USDT-USDT-SPOT/trades
     """
-    symbol = parse_symbol_path(symbol_path)
-    components = parse_symbol_path_components(symbol_path)
+    symbol_str = parse_symbol_path(symbol)
+    components = parse_symbol_path_components(symbol)
     db = get_db()
     
     trades = await db.read(
@@ -172,12 +152,12 @@ async def get_pool_trades(
         ORDER BY t.created_at DESC
         LIMIT $2
         """,
-        symbol,
+        symbol_str,
         limit,
     )
     
     trades_data: dict = {
-        "symbol": symbol,
+        "symbol": symbol_str,
         "trades": trades,
     }
     if components:
@@ -187,6 +167,160 @@ async def get_pool_trades(
         trades_data["settle"] = settle
         trades_data["market"] = market
     return APIResponse(success=True, data=trades_data)
+
+
+@router.get("/public", response_model=APIResponse)
+async def get_pool_public(
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
+    limit: int = Query(100, ge=1, le=200, description="Number of recent trades"),
+    engine_router: EngineRouter = Depends(get_router),
+):
+    """
+    Get public pool data + recent trades in one call. No auth required.
+    Reduces API calls by combining pool info and trades.
+    """
+    symbol_str = parse_symbol_path(symbol)
+    components = parse_symbol_path_components(symbol)
+    engine = await engine_router._get_engine(symbol_str, EngineType.AMM)
+
+    if not engine:
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
+
+    pool = await engine._get_pool()
+    if not pool:
+        raise HTTPException(status_code=404, detail=f"No pool data for '{symbol_str}'")
+
+    db = get_db()
+    trades = await db.read(
+        """
+        SELECT t.trade_id, t.side, t.price, t.quantity, t.quote_amount,
+               t.fee_amount, t.fee_asset, t.created_at
+        FROM trades t
+        JOIN symbol_configs sc USING (symbol_id)
+        WHERE sc.symbol = $1 AND sc.engine_type = 0 AND t.status = 1
+        ORDER BY t.created_at DESC
+        LIMIT $2
+        """,
+        symbol_str,
+        limit,
+    )
+
+    data: dict = {
+        "symbol": symbol_str,
+        "pool_id": pool["pool_id"],
+        "reserve_base": float(pool["reserve_base"]),
+        "reserve_quote": float(pool["reserve_quote"]),
+        "k_value": float(pool["k_value"]),
+        "fee_rate": float(pool["fee_rate"]),
+        "total_volume_base": float(pool["total_volume_base"]),
+        "total_volume_quote": float(pool["total_volume_quote"]),
+        "total_fees_collected": float(pool["total_fees_collected"]),
+        "total_lp_shares": float(pool["total_lp_shares"]),
+        "current_price": float(pool["reserve_quote"]) / float(pool["reserve_base"])
+        if float(pool["reserve_base"]) > 0 else 0,
+        "trades": trades,
+    }
+    if components:
+        base, quote, settle, market = components
+        data["base"] = base
+        data["quote"] = quote
+        data["settle"] = settle
+        data["market"] = market
+    return APIResponse(success=True, data=data)
+
+
+@router.get("/user", response_model=APIResponse)
+async def get_pool_user(
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
+    user_id: str = Depends(get_current_user_id),
+    router: EngineRouter = Depends(get_router),
+):
+    """
+    Get user-specific pool data: LP position + base/quote balances.
+    Requires authentication.
+    """
+    symbol_str = parse_symbol_path(symbol)
+    components = parse_symbol_path_components(symbol)
+    engine = await router._get_engine(symbol_str, EngineType.AMM)
+
+    if not engine:
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
+
+    pool = await engine._get_pool()
+    if not pool:
+        raise HTTPException(status_code=404, detail=f"No pool data for '{symbol_str}'")
+
+    base_asset = engine.base_asset
+    quote_asset = engine.quote_asset
+
+    # Get LP position
+    position = await engine._get_lp_position(user_id)
+
+    # Get user balances for base and quote
+    db = get_db()
+    base_row = await db.read_one(
+        """
+        SELECT available FROM user_balances
+        WHERE user_id = $1 AND currency = $2 AND account_type = 'spot' AND is_active = TRUE
+        """,
+        user_id,
+        base_asset,
+    )
+    quote_row = await db.read_one(
+        """
+        SELECT available FROM user_balances
+        WHERE user_id = $1 AND currency = $2 AND account_type = 'spot' AND is_active = TRUE
+        """,
+        user_id,
+        quote_asset,
+    )
+
+    base_balance = float(base_row["available"]) if base_row else 0
+    quote_balance = float(quote_row["available"]) if quote_row else 0
+
+    lp_data: dict | None = None
+    if position and float(position.get("lp_shares", 0)) > 0:
+        pool_data = await engine._get_pool()
+        user_lp = Decimal(str(position["lp_shares"]))
+        if pool_data:
+            total_lp = Decimal(str(pool_data["total_lp_shares"]))
+            reserve_base = Decimal(str(pool_data["reserve_base"]))
+            reserve_quote = Decimal(str(pool_data["reserve_quote"]))
+            if total_lp > 0:
+                share_ratio = user_lp / total_lp
+                estimated_base = reserve_base * share_ratio
+                estimated_quote = reserve_quote * share_ratio
+            else:
+                share_ratio = Decimal("0")
+                estimated_base = Decimal("0")
+                estimated_quote = Decimal("0")
+        else:
+            share_ratio = Decimal("0")
+            estimated_base = Decimal("0")
+            estimated_quote = Decimal("0")
+        lp_data = {
+            "pool_id": str(position.get("pool_id", "")),
+            "lp_shares": float(position["lp_shares"]),
+            "share_percentage": float(share_ratio),
+            "estimated_base_value": float(estimated_base),
+            "estimated_quote_value": float(estimated_quote),
+            "initial_base_amount": float(position.get("initial_base_amount", 0)),
+            "initial_quote_amount": float(position.get("initial_quote_amount", 0)),
+        }
+
+    data: dict = {
+        "symbol": symbol_str,
+        "lp_position": lp_data,
+        "base_balance": str(base_balance),
+        "quote_balance": str(quote_balance),
+    }
+    if components:
+        base, quote, settle, market = components
+        data["base"] = base
+        data["quote"] = quote
+        data["settle"] = settle
+        data["market"] = market
+    return APIResponse(success=True, data=data)
 
 
 PeriodKind = Literal["1H", "1D", "1W", "1M", "1Y", "ALL"]
@@ -215,9 +349,9 @@ def _chart_since_and_bucket(period: PeriodKind) -> tuple[datetime, str]:
     return since, "day"
 
 
-@router.get("/{symbol_path}/chart/volume", response_model=APIResponse)
+@router.get("/chart/volume", response_model=APIResponse)
 async def get_pool_volume_chart(
-    symbol_path: str,
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
     period: PeriodKind = Query("1D", description="Time range: 1H, 1D, 1W, 1M, 1Y, ALL"),
     limit: int = Query(100, ge=1, le=500, description="Max number of buckets"),
 ):
@@ -225,17 +359,17 @@ async def get_pool_volume_chart(
     Get time-bucketed volume for a pool (for bar chart).
     Public endpoint. Uses completed AMM trades only.
     """
-    symbol = parse_symbol_path(symbol_path)
-    components = parse_symbol_path_components(symbol_path)
+    symbol_str = parse_symbol_path(symbol)
+    components = parse_symbol_path_components(symbol)
     db = get_db()
 
     # Resolve symbol_id for this AMM symbol
     row = await db.read_one(
         "SELECT symbol_id FROM symbol_configs WHERE symbol = $1 AND engine_type = 0 AND is_active = TRUE",
-        symbol,
+        symbol_str,
     )
     if not row:
-        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol}' not found")
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
 
     symbol_id = row["symbol_id"]
     since_ts, bucket_kind = _chart_since_and_bucket(period)
@@ -269,7 +403,7 @@ async def get_pool_volume_chart(
         for r in rows
     ]
 
-    data: dict = {"symbol": symbol, "buckets": buckets}
+    data: dict = {"symbol": symbol_str, "buckets": buckets}
     if components:
         base, quote, settle, market = components
         data["base"] = base
@@ -279,33 +413,49 @@ async def get_pool_volume_chart(
     return APIResponse(success=True, data=data)
 
 
-@router.get("/{symbol_path}/chart/price-history", response_model=APIResponse)
+@router.get("/chart/price-history", response_model=APIResponse)
 async def get_pool_price_history(
-    symbol_path: str,
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
     period: PeriodKind = Query("1D", description="Time range: 1H, 1D, 1W, 1M, 1Y, ALL"),
     limit: int = Query(500, ge=1, le=2000, description="Max number of points"),
 ):
     """
-    Get price history for a pool from trade execution prices.
-    Public endpoint. Returns (time, price) series from completed AMM trades.
+    Get price history for a pool based on AMM pool spot prices after each trade.
+    Public endpoint. Returns (time, price) series derived primarily from pool reserves,
+    with a safe fallback to trade execution price when reserve data is unavailable.
     """
-    symbol = parse_symbol_path(symbol_path)
-    components = parse_symbol_path_components(symbol_path)
+    symbol_str = parse_symbol_path(symbol)
+    components = parse_symbol_path_components(symbol)
     db = get_db()
 
     row = await db.read_one(
         "SELECT symbol_id FROM symbol_configs WHERE symbol = $1 AND engine_type = 0 AND is_active = TRUE",
-        symbol,
+        symbol_str,
     )
     if not row:
-        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol}' not found")
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
 
     symbol_id = row["symbol_id"]
     since_ts, _ = _chart_since_and_bucket(period)
 
+    # Use AMM pool spot price after each trade when possible, falling back to execution price.
+    # engine_data.reserve_quote_after / engine_data.reserve_base_after represents pool state
+    # immediately after the trade.
     rows = await db.read(
         """
-        SELECT t.created_at AS time, t.price
+        SELECT 
+            t.created_at AS time,
+            COALESCE(
+                CASE 
+                    WHEN (t.engine_data ->> 'reserve_base_after') IS NOT NULL
+                         AND (t.engine_data ->> 'reserve_quote_after') IS NOT NULL
+                         AND NULLIF((t.engine_data ->> 'reserve_base_after')::numeric, 0) IS NOT NULL
+                    THEN (t.engine_data ->> 'reserve_quote_after')::numeric 
+                         / NULLIF((t.engine_data ->> 'reserve_base_after')::numeric, 0)
+                    ELSE NULL
+                END,
+                t.price
+            ) AS price
         FROM trades t
         WHERE t.symbol_id = $1 AND t.engine_type = 0 AND t.status = 1
           AND t.created_at >= $2
@@ -325,7 +475,7 @@ async def get_pool_price_history(
         for r in rows
     ]
 
-    data: dict = {"symbol": symbol, "prices": prices}
+    data: dict = {"symbol": symbol_str, "prices": prices}
     if components:
         base, quote, settle, market = components
         data["base"] = base
@@ -335,26 +485,21 @@ async def get_pool_price_history(
     return APIResponse(success=True, data=data)
 
 
-@router.get("/{symbol_path}/quote", response_model=APIResponse)
+@router.get("/quote", response_model=APIResponse)
 async def get_swap_quote(
-    symbol_path: str,
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
     side: OrderSide = Query(..., description="Buy or sell"),
     quantity: Optional[Decimal] = Query(None, description="Amount of base asset"),
     quote_amount: Optional[Decimal] = Query(None, description="Amount of quote asset"),
     router: EngineRouter = Depends(get_router),
 ):
     """
-    Get a quote for an AMM swap.
-    
-    Path format: {base}-{quote}-{settle}-{market}
-    Example: /api/pool/AMM-USDT-USDT-SPOT/quote
-    
-    Preview swap execution without actually trading.
+    Get a quote for an AMM swap. Preview swap execution without actually trading.
     """
-    symbol = parse_symbol_path(symbol_path)
-    components = parse_symbol_path_components(symbol_path)
+    symbol_str = parse_symbol_path(symbol)
+    components = parse_symbol_path_components(symbol)
     result = await router.get_quote(
-        symbol=symbol,
+        symbol=symbol_str,
         side=side,
         quantity=quantity,
         quote_amount=quote_amount,
@@ -365,7 +510,7 @@ async def get_swap_quote(
         raise HTTPException(status_code=400, detail=result.error_message)
     
     quote_data: dict = {
-        "symbol": symbol,
+        "symbol": symbol_str,
         "side": side.value,
         "input_amount": float(result.input_amount),
         "input_asset": result.input_asset,
@@ -385,9 +530,9 @@ async def get_swap_quote(
     return APIResponse(success=True, data=quote_data)
 
 
-@router.get("/{symbol_path}/liquidity/add/quote", response_model=APIResponse)
+@router.get("/liquidity/add/quote", response_model=APIResponse)
 async def get_add_liquidity_quote(
-    symbol_path: str,
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
     base_amount: Optional[Decimal] = Query(None, gt=0, description="Amount of base asset"),
     quote_amount: Optional[Decimal] = Query(None, gt=0, description="Amount of quote asset"),
     router: EngineRouter = Depends(get_router),
@@ -401,16 +546,16 @@ async def get_add_liquidity_quote(
     if base_amount is not None and quote_amount is not None:
         raise HTTPException(status_code=400, detail="Provide only one of base_amount or quote_amount")
 
-    symbol = parse_symbol_path(symbol_path)
-    components = parse_symbol_path_components(symbol_path)
-    engine = await router._get_engine(symbol, EngineType.AMM)
+    symbol_str = parse_symbol_path(symbol)
+    components = parse_symbol_path_components(symbol)
+    engine = await router._get_engine(symbol_str, EngineType.AMM)
 
     if not engine:
-        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol}' not found")
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
 
     pool = await engine._get_pool()
     if not pool:
-        raise HTTPException(status_code=404, detail=f"No pool data for '{symbol}'")
+        raise HTTPException(status_code=404, detail=f"No pool data for '{symbol_str}'")
 
     reserve_base = Decimal(str(pool["reserve_base"]))
     reserve_quote = Decimal(str(pool["reserve_quote"]))
@@ -594,30 +739,27 @@ async def remove_liquidity(
     return APIResponse(success=True, data=remove_data)
 
 
-@router.get("/liquidity/position/{symbol_path}", response_model=APIResponse)
+@router.get("/liquidity/position", response_model=APIResponse)
 async def get_lp_position(
-    symbol_path: str,
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
     user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),
 ):
     """
     Get your LP position for an AMM pool.
-    
-    Path format: {base}-{quote}-{settle}-{market}
-    Example: /api/pool/liquidity/position/AMM-USDT-USDT-SPOT
     """
-    symbol = parse_symbol_path(symbol_path)
-    engine = await router._get_engine(symbol, EngineType.AMM)
+    symbol_str = parse_symbol_path(symbol)
+    engine = await router._get_engine(symbol_str, EngineType.AMM)
     
     if not engine:
-        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol}' not found")
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
     
     position = await engine._get_lp_position(user_id)
     
-    components = parse_symbol_path_components(symbol_path)
+    components = parse_symbol_path_components(symbol)
     if not position:
         pos_data: dict = {
-            "symbol": symbol,
+            "symbol": symbol_str,
             "lp_shares": 0,
             "has_position": False,
         }
@@ -650,7 +792,7 @@ async def get_lp_position(
         share_ratio = Decimal("0")
     
     pos_data = {
-        "symbol": symbol,
+        "symbol": symbol_str,
         "lp_shares": float(position["lp_shares"]),
         "initial_base_amount": float(position["initial_base_amount"]),
         "initial_quote_amount": float(position["initial_quote_amount"]),
@@ -668,27 +810,24 @@ async def get_lp_position(
     return APIResponse(success=True, data=pos_data)
 
 
-@router.get("/liquidity/history/{symbol_path}", response_model=APIResponse)
+@router.get("/liquidity/history", response_model=APIResponse)
 async def get_liquidity_history(
-    symbol_path: str,
+    symbol: str = Query(..., description="Symbol in format base-quote-settle-market (e.g. AMM-USDT-USDT-SPOT)"),
     user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),
 ):
     """
     Get your liquidity event history for an AMM pool.
-    
-    Path format: {base}-{quote}-{settle}-{market}
-    Example: /api/pool/liquidity/history/AMM-USDT-USDT-SPOT
     """
-    symbol = parse_symbol_path(symbol_path)
-    engine = await router._get_engine(symbol, EngineType.AMM)
+    symbol_str = parse_symbol_path(symbol)
+    engine = await router._get_engine(symbol_str, EngineType.AMM)
     
     if not engine:
-        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol}' not found")
+        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
     
     pool = await engine._get_pool()
     if not pool:
-        raise HTTPException(status_code=404, detail=f"No pool data for '{symbol}'")
+        raise HTTPException(status_code=404, detail=f"No pool data for '{symbol_str}'")
     
     events = await engine.db.read(
         """
@@ -714,10 +853,10 @@ async def get_liquidity_history(
         })
     
     history_data: dict = {
-        "symbol": symbol,
+        "symbol": symbol_str,
         "events": formatted_events,
     }
-    components = parse_symbol_path_components(symbol_path)
+    components = parse_symbol_path_components(symbol)
     if components:
         base, quote, settle, market = components
         history_data["base"] = base

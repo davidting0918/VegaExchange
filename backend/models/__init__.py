@@ -9,7 +9,6 @@ from backend.models.requests import (
     PlaceOrderRequest,
     RemoveLiquidityRequest,
     SwapRequest,
-    TradeRequest,
 )
 from backend.models.responses import (
     AMMPoolResponse,
@@ -33,7 +32,6 @@ __all__ = [
     "TradeStatus",
     # Requests
     "CreateSymbolRequest",
-    "TradeRequest",
     "SwapRequest",
     "PlaceOrderRequest",
     "AddLiquidityRequest",

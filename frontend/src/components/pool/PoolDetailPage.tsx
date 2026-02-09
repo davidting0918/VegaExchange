@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useTrading, useUser } from '../../hooks'
+import { usePoolPageState } from '../../hooks'
 import { Card, Button, LoadingSpinner, Modal } from '../common'
 import { SwapPanel } from '../trading/SwapPanel'
 import { TradeHistory } from '../trading/TradeHistory'
@@ -26,6 +27,8 @@ export const PoolDetailPage: React.FC = () => {
     lpPosition,
     quote,
     recentTrades,
+    poolBaseBalance,
+    poolQuoteBalance,
     isLoading,
     isQuoteLoading,
     selectSymbol,
@@ -36,6 +39,7 @@ export const PoolDetailPage: React.FC = () => {
   } = useTrading()
 
   const { balances } = useUser()
+  const { page, range, input, flipped, setPage, setRange, setInput, setFlipped, setSwapDirection } = usePoolPageState()
 
   const [isSwapping, setIsSwapping] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -57,16 +61,20 @@ export const PoolDetailPage: React.FC = () => {
   }, [decodedSymbol, refreshPoolData])
 
   const baseBalance = useMemo(() => {
-    if (!poolInfo || !balances) return '0'
+    if (!poolInfo) return '0'
+    if (poolBaseBalance != null) return poolBaseBalance
+    if (!balances) return '0'
     const balance = balances.find(b => b.currency === poolInfo.base)
     return balance?.available || '0'
-  }, [poolInfo, balances])
+  }, [poolInfo, poolBaseBalance, balances])
 
   const quoteBalance = useMemo(() => {
-    if (!poolInfo || !balances) return '0'
+    if (!poolInfo) return '0'
+    if (poolQuoteBalance != null) return poolQuoteBalance
+    if (!balances) return '0'
     const balance = balances.find(b => b.currency === poolInfo.quote)
     return balance?.available || '0'
-  }, [poolInfo, balances])
+  }, [poolInfo, poolQuoteBalance, balances])
 
   const tvl = useMemo(() => {
     if (!poolInfo) return 0
@@ -190,14 +198,14 @@ export const PoolDetailPage: React.FC = () => {
               {poolInfo.base}/{poolInfo.quote} AMM {feePercent}%
             </h1>
             <p className="text-text-secondary text-sm mt-0.5">
-              Current price: {formatNumber(parseFloat(poolInfo.current_price), 6)} {poolInfo.quote}
+              Past day: {formatCrypto(poolInfo.total_volume_quote)} {poolInfo.quote}
             </p>
           </div>
           <div className="text-right">
             <p className="text-3xl font-bold text-text-primary">
-              {formatCrypto(poolInfo.total_volume_quote)} {poolInfo.quote}
+              {formatNumber(parseFloat(poolInfo.current_price), 6)} {poolInfo.quote}
             </p>
-            <p className="text-sm text-text-tertiary">Past day</p>
+            <p className="text-sm text-text-tertiary">Current price</p>
           </div>
         </div>
       </div>
@@ -212,12 +220,19 @@ export const PoolDetailPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column - Chart + Transactions */}
         <div className="lg:col-span-2 space-y-6">
-          <PoolChartSection pool={poolInfo} />
+          <PoolChartSection
+            pool={poolInfo}
+            timeRange={range}
+            onTimeRangeChange={setRange}
+          />
           <TradeHistory
             trades={recentTrades}
             isLoading={isLoading}
             baseToken={poolInfo.base}
             quoteToken={poolInfo.quote}
+            symbolKey={decodedSymbol}
+            page={page}
+            onPageChange={setPage}
           />
         </div>
 
@@ -256,6 +271,11 @@ export const PoolDetailPage: React.FC = () => {
             isSwapping={isSwapping}
             baseBalance={baseBalance}
             quoteBalance={quoteBalance}
+            activeInput={input}
+            flipped={flipped}
+            onActiveInputChange={setInput}
+            onFlippedChange={setFlipped}
+            onSwapDirectionChange={setSwapDirection}
           />
 
           {/* Total APR placeholder */}

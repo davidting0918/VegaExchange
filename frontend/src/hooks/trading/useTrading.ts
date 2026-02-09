@@ -6,6 +6,8 @@ import {
   fetchLPPosition,
   fetchQuote,
   fetchRecentTrades,
+  fetchPoolPublic,
+  fetchPoolUser,
   setCurrentSymbol,
   clearQuote,
   clearTradingError,
@@ -29,13 +31,19 @@ export const useTrading = () => {
   const selectSymbol = useCallback(
     async (symbol: string, engineType: number = 0) => {
       dispatch(setCurrentSymbol(symbol))
-      // Load pool info and recent trades
-      // engineType: 0 = AMM, 1 = CLOB
-      await Promise.all([
-        dispatch(fetchPoolInfo(symbol)),
-        dispatch(fetchRecentTrades({ symbol, engineType, limit: 20 })),
-        isAuthenticated ? dispatch(fetchLPPosition(symbol)) : Promise.resolve(),
-      ])
+      // Use combined endpoints: public (pool + trades) + user (LP + balances) when auth
+      if (engineType === 0) {
+        await Promise.all([
+          dispatch(fetchPoolPublic(symbol)),
+          isAuthenticated ? dispatch(fetchPoolUser(symbol)) : Promise.resolve(),
+        ])
+      } else {
+        await Promise.all([
+          dispatch(fetchPoolInfo(symbol)),
+          dispatch(fetchRecentTrades({ symbol, engineType, limit: 100 })),
+          isAuthenticated ? dispatch(fetchLPPosition(symbol)) : Promise.resolve(),
+        ])
+      }
     },
     [dispatch, isAuthenticated]
   )
@@ -43,9 +51,8 @@ export const useTrading = () => {
   const refreshPoolData = useCallback(async () => {
     if (!tradingState.currentSymbol) return
     await Promise.all([
-      dispatch(fetchPoolInfo(tradingState.currentSymbol)),
-      dispatch(fetchRecentTrades({ symbol: tradingState.currentSymbol, engineType: 0, limit: 20 })),
-      isAuthenticated ? dispatch(fetchLPPosition(tradingState.currentSymbol)) : Promise.resolve(),
+      dispatch(fetchPoolPublic(tradingState.currentSymbol)),
+      isAuthenticated ? dispatch(fetchPoolUser(tradingState.currentSymbol)) : Promise.resolve(),
     ])
   }, [dispatch, tradingState.currentSymbol, isAuthenticated])
 
@@ -114,6 +121,8 @@ export const useTrading = () => {
     lpPosition: tradingState.lpPosition,
     quote: tradingState.quote,
     recentTrades: tradingState.recentTrades,
+    poolBaseBalance: tradingState.poolBaseBalance,
+    poolQuoteBalance: tradingState.poolQuoteBalance,
     isLoading: tradingState.isLoading,
     isQuoteLoading: tradingState.isQuoteLoading,
     error: tradingState.error,

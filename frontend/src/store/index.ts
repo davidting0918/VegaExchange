@@ -46,6 +46,8 @@ export {
   fetchLPPosition,
   fetchQuote,
   fetchRecentTrades,
+  fetchPoolPublic,
+  fetchPoolUser,
   setCurrentSymbol,
   clearQuote,
   clearTradingError,

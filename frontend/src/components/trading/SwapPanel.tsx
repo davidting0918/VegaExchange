@@ -41,6 +41,13 @@ interface SwapPanelProps {
   isSwapping?: boolean
   baseBalance?: string
   quoteBalance?: string
+  /** Controlled from URL; when provided, parent owns state. */
+  activeInput?: ActiveInput
+  flipped?: boolean
+  onActiveInputChange?: (input: ActiveInput) => void
+  onFlippedChange?: (flipped: boolean) => void
+  /** When provided, arrow click uses this for both flipped+input in one call (avoids URL race). */
+  onSwapDirectionChange?: (flipped: boolean, input: ActiveInput) => void
 }
 
 type SwapTab = 'swap' | 'limit' | 'buy' | 'sell'
@@ -53,13 +60,23 @@ export const SwapPanel: React.FC<SwapPanelProps> = ({
   isSwapping = false,
   baseBalance = '0',
   quoteBalance = '0',
+  activeInput: controlledActiveInput,
+  flipped: controlledFlipped,
+  onActiveInputChange,
+  onFlippedChange,
+  onSwapDirectionChange,
 }) => {
   const [activeTab, setActiveTab] = useState<SwapTab>('swap')
   const [baseAmount, setBaseAmount] = useState('')
   const [quoteAmount, setQuoteAmount] = useState('')
-  const [activeInput, setActiveInput] = useState<ActiveInput>('base')
-  /** When true, display quote token on top and base on bottom (e.g. USDT → AMM) */
-  const [flipped, setFlipped] = useState(false)
+  const [internalActiveInput, setInternalActiveInput] = useState<ActiveInput>('base')
+  const [internalFlipped, setInternalFlipped] = useState(false)
+  const isControlledInput = onActiveInputChange != null
+  const isControlledFlipped = onFlippedChange != null
+  const activeInput = isControlledInput ? (controlledActiveInput ?? 'base') : internalActiveInput
+  const flipped = isControlledFlipped ? (controlledFlipped ?? false) : internalFlipped
+  const setActiveInput = isControlledInput ? onActiveInputChange : setInternalActiveInput
+  const setFlipped = isControlledFlipped ? onFlippedChange : setInternalFlipped
 
   // Upper = top box, lower = bottom box. Swap always executes upper → lower.
   const upperAmount = flipped ? quoteAmount : baseAmount
@@ -136,10 +153,16 @@ export const SwapPanel: React.FC<SwapPanelProps> = ({
   }
 
   const handleArrowClick = () => {
-    setFlipped((prev) => !prev)
+    const newFlipped = !flipped
+    const newInput: ActiveInput = activeInput === 'base' ? 'quote' : 'base'
     setBaseAmount(quoteAmount)
     setQuoteAmount(baseAmount)
-    setActiveInput((prev) => (prev === 'base' ? 'quote' : 'base'))
+    if (onSwapDirectionChange) {
+      onSwapDirectionChange(newFlipped, newInput)
+    } else {
+      setFlipped(newFlipped)
+      setActiveInput(newInput)
+    }
   }
 
   const handleSwap = async () => {

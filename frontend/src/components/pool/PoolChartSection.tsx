@@ -10,14 +10,23 @@ type TimeRange = '1H' | '1D' | '1W' | '1M' | '1Y' | 'ALL'
 
 interface PoolChartSectionProps {
   pool: PoolInfo | null
+  /** Controlled time range from URL; when provided, parent owns state. */
+  timeRange?: TimeRange
+  onTimeRangeChange?: (range: TimeRange) => void
 }
 
-export const PoolChartSection: React.FC<PoolChartSectionProps> = ({ pool }) => {
+export const PoolChartSection: React.FC<PoolChartSectionProps> = ({
+  pool,
+  timeRange: controlledTimeRange,
+  onTimeRangeChange,
+}) => {
   const [chartType, setChartType] = useState<ChartType>('price')
-  const [timeRange, setTimeRange] = useState<TimeRange>('1D')
+  const [internalTimeRange, setInternalTimeRange] = useState<TimeRange>('1D')
+  const isControlled = controlledTimeRange != null && onTimeRangeChange != null
+  const timeRange = isControlled ? controlledTimeRange : internalTimeRange
+  const setTimeRange = isControlled ? onTimeRangeChange : setInternalTimeRange
   const [volumeBuckets, setVolumeBuckets] = useState<{ time: string; volume: number }[]>([])
   const [pricePoints, setPricePoints] = useState<{ time: string; price: number }[]>([])
-  const [chartLoading, setChartLoading] = useState(false)
   const [chartError, setChartError] = useState<string | null>(null)
 
   const chartTypes: { id: ChartType; label: string }[] = [
@@ -28,9 +37,10 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({ pool }) => {
 
   const timeRanges: TimeRange[] = ['1H', '1D', '1W', '1M', '1Y', 'ALL']
 
-  useEffect(() => {
+  const CHART_POLL_INTERVAL_MS = 10_000
+
+  const fetchChartData = React.useCallback(() => {
     if (!pool?.symbol) return
-    setChartLoading(true)
     setChartError(null)
     const period = timeRange
     if (chartType === 'price') {
@@ -44,7 +54,6 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({ pool }) => {
           setPricePoints([])
           setChartError('Failed to load price history')
         })
-        .finally(() => setChartLoading(false))
     } else {
       tradeService
         .getPoolVolumeChart(pool.symbol, period)
@@ -56,9 +65,20 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({ pool }) => {
           setVolumeBuckets([])
           setChartError('Failed to load volume data')
         })
-        .finally(() => setChartLoading(false))
     }
   }, [pool?.symbol, chartType, timeRange])
+
+  // Initial fetch + refetch when deps change
+  useEffect(() => {
+    fetchChartData()
+  }, [fetchChartData])
+
+  // Poll to pick up new trades (sync with refreshPoolData interval)
+  useEffect(() => {
+    if (!pool?.symbol) return
+    const interval = setInterval(fetchChartData, CHART_POLL_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [pool?.symbol, fetchChartData])
 
   const volumeData = useMemo(
     () =>
@@ -124,10 +144,6 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({ pool }) => {
           <div className="flex items-center justify-center h-[300px] text-text-tertiary text-sm">
             —
           </div>
-        ) : chartLoading ? (
-          <div className="flex items-center justify-center h-[300px] text-text-tertiary text-sm">
-            Loading…
-          </div>
         ) : chartError ? (
           <div className="flex items-center justify-center h-[300px] text-accent-red text-sm">
             {chartError}
@@ -135,7 +151,11 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({ pool }) => {
         ) : showPriceChart ? (
           priceLineData.length > 0 ? (
             <div className="px-2 pb-2">
-              <PriceLineChart data={priceLineData} height={300} />
+              <PriceLineChart
+                data={priceLineData}
+                height={300}
+                dataSetKey={`price-${timeRange}`}
+              />
             </div>
           ) : (
             <div className="flex items-center justify-center h-[300px] text-text-tertiary text-sm">

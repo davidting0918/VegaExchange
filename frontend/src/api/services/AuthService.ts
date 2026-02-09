@@ -79,7 +79,14 @@ class AuthService {
   async refreshToken(_request: RefreshTokenRequest): Promise<ApiResponse<TokenResponse>> {
     const result = await refreshAccessToken()
     if (result) {
-      return { success: true, data: { access_token: result.access_token, refresh_token: result.refresh_token } }
+      return {
+        success: true,
+        data: {
+          access_token: result.access_token,
+          refresh_token: result.refresh_token,
+          token_type: 'bearer',
+        },
+      }
     }
     throw new Error('Refresh failed')
   }

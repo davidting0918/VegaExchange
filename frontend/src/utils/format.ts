@@ -93,23 +93,6 @@ export function formatPriceImpact(value: string | number | BigNumber): string {
 }
 
 /**
- * Shorten address/hash for display
- */
-export function shortenAddress(address: string, chars: number = 4): string {
-  if (!address) return ''
-  if (address.length <= chars * 2 + 2) return address
-  return `${address.slice(0, chars + 2)}...${address.slice(-chars)}`
-}
-
-/**
- * Format timestamp to locale string
- */
-export function formatTimestamp(timestamp: string | number | Date): string {
-  const date = new Date(timestamp)
-  return date.toLocaleString()
-}
-
-/**
  * Format relative time (e.g., "2 minutes ago")
  */
 export function formatRelativeTime(timestamp: string | number | Date): string {

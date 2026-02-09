@@ -21,27 +21,35 @@ router = APIRouter(prefix="/api/market", tags=["market"])
 
 
 @router.get("", response_model=APIResponse)
-async def get_all_markets(router: EngineRouter = Depends(get_router)):
+async def get_all_markets(
+    symbol: Optional[str] = Query(None, description="Symbol. When provided, returns market data for that symbol."),
+    engine_type: Optional[int] = Query(None, description="Engine type: 0=AMM, 1=CLOB (used when symbol is provided)"),
+    router: EngineRouter = Depends(get_router),
+):
     """
-    Get all active markets (both AMM and CLOB).
-    
-    Returns summary of all markets with current prices.
+    Get all active markets (both AMM and CLOB), or get market data for a symbol when symbol is provided.
     """
+    if symbol:
+        et = EngineType(engine_type) if engine_type is not None else None
+        data = await router.get_market_data(symbol.upper(), et)
+        if "error" in data:
+            raise HTTPException(status_code=404, detail=data["error"])
+        data["timestamp"] = datetime.utcnow().isoformat()
+        return APIResponse(success=True, data=data)
+
     symbols = await router.get_all_symbols()
-    
     markets = []
     for symbol_config in symbols:
-        engine_type = EngineType(symbol_config["engine_type"])
-        market_data = await router.get_market_data(symbol_config["symbol"], engine_type)
+        engine_type_val = EngineType(symbol_config["engine_type"])
+        market_data = await router.get_market_data(symbol_config["symbol"], engine_type_val)
         markets.append({
             "symbol": symbol_config["symbol"],
             "base_asset": symbol_config["base"],
             "quote_asset": symbol_config["quote"],
             "engine_type": symbol_config["engine_type"],
-            "engine_name": "AMM" if engine_type == EngineType.AMM else "CLOB",
+            "engine_name": "AMM" if engine_type_val == EngineType.AMM else "CLOB",
             "current_price": market_data.get("current_price", 0),
         })
-    
     return APIResponse(
         success=True,
         data={
@@ -63,35 +71,13 @@ async def list_symbols(router: EngineRouter = Depends(get_router)):
     return APIResponse(success=True, data=symbols)
 
 
-@router.get("/{symbol}", response_model=APIResponse)
-async def get_market_data(
-    symbol: str,
-    engine_type: Optional[int] = Query(None, description="Engine type: 0=AMM, 1=CLOB"),
+@router.get("/engines", response_model=APIResponse)
+async def get_symbol_engines(
+    symbol: str = Query(..., description="Symbol (e.g. AMM/USDT-USDT:SPOT)"),
     router: EngineRouter = Depends(get_router),
 ):
     """
-    Get market data for a symbol.
-    
-    If symbol exists on both AMM and CLOB, use engine_type to specify.
-    Otherwise returns the first available engine's data.
-    """
-    et = EngineType(engine_type) if engine_type is not None else None
-    data = await router.get_market_data(symbol.upper(), et)
-    
-    if "error" in data:
-        raise HTTPException(status_code=404, detail=data["error"])
-    
-    data["timestamp"] = datetime.utcnow().isoformat()
-    
-    return APIResponse(success=True, data=data)
-
-
-@router.get("/{symbol}/engines", response_model=APIResponse)
-async def get_symbol_engines(symbol: str, router: EngineRouter = Depends(get_router)):
-    """
-    Get all available engines for a symbol.
-    
-    Shows which engines (AMM/CLOB) are available for this symbol.
+    Get all available engines for a symbol. Shows which engines (AMM/CLOB) are available.
     """
     engines = await router.get_symbol_engines(symbol.upper())
     

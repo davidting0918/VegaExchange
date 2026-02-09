@@ -1,6 +1,7 @@
 import { apiClient } from '../client'
-import type { ApiResponse, Symbol, PoolInfo, Trade } from '../../types'
-import { toPoolApiPath, parseSymbolToPath } from '../../utils/market'
+import { API, poolParams, orderbookParams, marketParams } from '../endpoints'
+import type { ApiResponse, Symbol, PoolInfo, Trade, LPPosition } from '../../types'
+import { parseSymbolToPath } from '../../utils/market'
 
 // Market data response
 interface MarketData {
@@ -22,22 +23,9 @@ const ENGINE_TYPE = {
 } as const
 
 class MarketService {
-  private basePath = '/api/market'
-
-  // Convert symbol to pool API path format: {base}-{quote}-{settle}-{market}
-  private toPoolPath(symbol: string): string {
-    return toPoolApiPath(symbol)
-  }
-
-  // URL encode symbol for non-pool API paths
-  private encodeSymbol(symbol: string): string {
-    return encodeURIComponent(symbol)
-  }
-
   // Get all active symbols
   async getSymbols(): Promise<ApiResponse<Symbol[]>> {
-    // Use /api/market to get all markets
-    const response = await apiClient.get(this.basePath)
+    const response = await apiClient.get(API.market)
     // The /api/market endpoint returns { markets: [...] }, extract the array
     const data = response.data
     if (data.success && data.data?.markets) {
@@ -65,26 +53,26 @@ class MarketService {
 
   // Get symbol details
   async getSymbol(symbol: string): Promise<ApiResponse<Symbol>> {
-    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}`)
+    const response = await apiClient.get(API.market, { params: marketParams(symbol) })
     return response.data
   }
 
   // Get market data for a symbol
   async getMarketData(symbol: string, engineType?: number): Promise<ApiResponse<MarketData>> {
-    const params = engineType !== undefined ? { engine_type: engineType } : {}
-    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}`, { params })
+    const params = engineType !== undefined ? marketParams(symbol, { engine_type: engineType }) : marketParams(symbol)
+    const response = await apiClient.get(API.market, { params })
     return response.data
   }
 
   // Get all market data
   async getAllMarketData(): Promise<ApiResponse<MarketData[]>> {
-    const response = await apiClient.get(this.basePath)
+    const response = await apiClient.get(API.market)
     return response.data
   }
 
-  // Get AMM pool data - uses /api/pool/{base}-{quote}-{settle}-{market}
+  // Get AMM pool data
   async getPoolData(symbol: string): Promise<ApiResponse<PoolInfo>> {
-    const response = await apiClient.get(`/api/pool/${this.toPoolPath(symbol)}`)
+    const response = await apiClient.get(API.pool, { params: poolParams(symbol) })
     const data = response.data
     
     // Transform backend response to match PoolInfo type
@@ -118,21 +106,90 @@ class MarketService {
     return data
   }
 
+  // Get public pool data + trades in one call (reduces API calls)
+  async getPoolPublic(
+    symbol: string,
+    limit: number = 100
+  ): Promise<ApiResponse<{ poolInfo: PoolInfo; trades: Trade[] }>> {
+    const response = await apiClient.get(`${API.pool}/public`, {
+      params: poolParams(symbol, { limit }),
+    })
+    const data = response.data
+    if (data.success && data.data) {
+      const d = data.data
+      const parsed = parseSymbolToPath(d.symbol)
+      const base = d.base ?? parsed?.base ?? ''
+      const quote = d.quote ?? parsed?.quote ?? ''
+      const poolInfo: PoolInfo = {
+        pool_id: d.pool_id || '',
+        symbol_id: d.symbol_id || 0,
+        symbol: d.symbol,
+        base,
+        quote,
+        reserve_base: String(d.reserve_base),
+        reserve_quote: String(d.reserve_quote),
+        k_value: String(d.k_value),
+        fee_rate: String(d.fee_rate),
+        total_lp_shares: String(d.total_lp_shares),
+        total_volume_base: String(d.total_volume_base),
+        total_volume_quote: String(d.total_volume_quote),
+        total_fees_collected: String(d.total_fees_collected),
+        current_price: String(d.current_price),
+      }
+      const trades = (d.trades || []).map((t: Record<string, unknown>) => ({
+        ...t,
+        side: t.side === 0 ? 'buy' : 'sell',
+        price: t.price != null ? String(t.price) : '0',
+        quantity: t.quantity != null ? String(t.quantity) : '0',
+        quote_amount: t.quote_amount != null ? String(t.quote_amount) : '0',
+        fee_amount: t.fee_amount != null ? String(t.fee_amount) : '0',
+      })) as Trade[]
+      return { success: true, data: { poolInfo, trades } }
+    }
+    return data
+  }
+
+  // Get user-specific pool data (LP position + balances). Requires auth.
+  async getPoolUser(
+    symbol: string
+  ): Promise<ApiResponse<{ lpPosition: LPPosition | null; baseBalance: string; quoteBalance: string }>> {
+    const response = await apiClient.get(`${API.pool}/user`, { params: poolParams(symbol) })
+    const data = response.data
+    if (data.success && data.data) {
+      const d = data.data
+      const lpPosition: LPPosition | null = d.lp_position
+        ? {
+            pool_id: d.lp_position.pool_id || '',
+            symbol: d.symbol,
+            lp_shares: String(d.lp_position.lp_shares),
+            share_percentage: String(d.lp_position.share_percentage ?? 0),
+            base_amount: String(d.lp_position.estimated_base_value ?? 0),
+            quote_amount: String(d.lp_position.estimated_quote_value ?? 0),
+            initial_base_amount: String(d.lp_position.initial_base_amount ?? 0),
+            initial_quote_amount: String(d.lp_position.initial_quote_amount ?? 0),
+          }
+        : null
+      return {
+        success: true,
+        data: {
+          lpPosition,
+          baseBalance: String(d.base_balance ?? '0'),
+          quoteBalance: String(d.quote_balance ?? '0'),
+        },
+      }
+    }
+    return data
+  }
+
   // Get recent trades for a symbol
-  // Uses /api/pool/{base}-{quote}-{settle}-{market}/trades for AMM or /api/orderbook/{symbol}/trades for CLOB
   async getRecentTrades(
     symbol: string,
     engineType: number = ENGINE_TYPE.AMM,
     limit: number = 50
   ): Promise<ApiResponse<Trade[]>> {
-    // Choose endpoint based on engine type
-    const endpoint = engineType === ENGINE_TYPE.AMM
-      ? `/api/pool/${this.toPoolPath(symbol)}/trades`
-      : `/api/orderbook/${this.encodeSymbol(symbol)}/trades`
-    
-    const response = await apiClient.get(endpoint, {
-      params: { limit },
-    })
+    const endpoint = engineType === ENGINE_TYPE.AMM ? `${API.pool}/trades` : `${API.orderbook}/trades`
+    const params = engineType === ENGINE_TYPE.AMM ? poolParams(symbol, { limit }) : orderbookParams(symbol, { limit })
+    const response = await apiClient.get(endpoint, { params })
     const data = response.data
     
     // Backend returns { symbol, trades: [...] }; side is 0 (BUY) or 1 (SELL), normalize to 'buy' | 'sell'
@@ -153,7 +210,7 @@ class MarketService {
     return data
   }
 
-  // Get orderbook (for CLOB symbols) - now uses /api/orderbook/{symbol}
+  // Get orderbook (for CLOB symbols)
   async getOrderbook(
     symbol: string,
     levels: number = 20
@@ -163,16 +220,15 @@ class MarketService {
       asks: Array<{ price: string; quantity: string }>
     }>
   > {
-    // New endpoint: GET /api/orderbook/{symbol}
-    const response = await apiClient.get(`/api/orderbook/${this.encodeSymbol(symbol)}`, {
-      params: { levels },
+    const response = await apiClient.get(API.orderbook, {
+      params: orderbookParams(symbol, { levels }),
     })
     return response.data
   }
 
   // Get all AMM pools
   async getAllPools(): Promise<ApiResponse<PoolInfo[]>> {
-    const response = await apiClient.get('/api/pool')
+    const response = await apiClient.get(API.pool)
     const data = response.data
     
     if (data.success && data.data?.pools) {
@@ -202,7 +258,7 @@ class MarketService {
 
   // Get all CLOB orderbook markets
   async getAllOrderbookMarkets(): Promise<ApiResponse<Symbol[]>> {
-    const response = await apiClient.get('/api/orderbook')
+    const response = await apiClient.get(API.orderbook)
     const data = response.data
     
     if (data.success && data.data?.markets) {
@@ -223,7 +279,7 @@ class MarketService {
       market_data: Record<string, unknown>
     }>
   }>> {
-    const response = await apiClient.get(`${this.basePath}/${this.encodeSymbol(symbol)}/engines`)
+    const response = await apiClient.get(`${API.market}/engines`, { params: marketParams(symbol) })
     return response.data
   }
 }

@@ -10,6 +10,8 @@ const initialState: TradingState = {
   lpPosition: null,
   quote: null,
   recentTrades: [],
+  poolBaseBalance: null,
+  poolQuoteBalance: null,
   isLoading: false,
   isQuoteLoading: false,
   error: null,
@@ -92,7 +94,7 @@ export const fetchRecentTrades = createAsyncThunk<
   { rejectValue: string }
 >(
   'trading/fetchRecentTrades',
-  async ({ symbol, engineType = 0, limit = 20 }, { rejectWithValue }) => {
+  async ({ symbol, engineType = 0, limit = 100 }, { rejectWithValue }) => {
     try {
       // engineType: 0 = AMM, 1 = CLOB
       const response = await marketService.getRecentTrades(symbol, engineType, limit)
@@ -107,6 +109,48 @@ export const fetchRecentTrades = createAsyncThunk<
   }
 )
 
+// Fetch public pool data + trades in one call (reduces API calls)
+export const fetchPoolPublic = createAsyncThunk<
+  { poolInfo: PoolInfo; trades: Trade[] },
+  string,
+  { rejectValue: string }
+>(
+  'trading/fetchPoolPublic',
+  async (symbol, { rejectWithValue }) => {
+    try {
+      const response = await marketService.getPoolPublic(symbol)
+      if (response.success && response.data) {
+        return response.data
+      }
+      throw new Error(response.message || 'Failed to fetch pool public data')
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch pool public data'
+      return rejectWithValue(message)
+    }
+  }
+)
+
+// Fetch user-specific pool data (LP position + balances). Requires auth.
+export const fetchPoolUser = createAsyncThunk<
+  { lpPosition: LPPosition | null; baseBalance: string; quoteBalance: string },
+  string,
+  { rejectValue: string }
+>(
+  'trading/fetchPoolUser',
+  async (symbol, { rejectWithValue }) => {
+    try {
+      const response = await marketService.getPoolUser(symbol)
+      if (response.success && response.data) {
+        return response.data
+      }
+      throw new Error(response.message || 'Failed to fetch pool user data')
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch pool user data'
+      return rejectWithValue(message)
+    }
+  }
+)
+
 const tradingSlice = createSlice({
   name: 'trading',
   initialState,
@@ -115,6 +159,8 @@ const tradingSlice = createSlice({
       state.currentSymbol = action.payload
       state.quote = null
       state.lpPosition = null
+      state.poolBaseBalance = null
+      state.poolQuoteBalance = null
     },
     clearQuote: (state) => {
       state.quote = null
@@ -129,6 +175,8 @@ const tradingSlice = createSlice({
       state.lpPosition = null
       state.quote = null
       state.recentTrades = []
+      state.poolBaseBalance = null
+      state.poolQuoteBalance = null
       state.isLoading = false
       state.isQuoteLoading = false
       state.error = null
@@ -187,14 +235,40 @@ const tradingSlice = createSlice({
         state.recentTrades = action.payload
       })
 
+      // Fetch pool public (pool info + trades)
+      .addCase(fetchPoolPublic.pending, (state) => {
+        state.isLoading = true
+        state.error = null
+      })
+      .addCase(fetchPoolPublic.fulfilled, (state, action) => {
+        state.isLoading = false
+        state.poolInfo = action.payload.poolInfo
+        state.recentTrades = action.payload.trades
+      })
+      .addCase(fetchPoolPublic.rejected, (state, action) => {
+        state.isLoading = false
+        state.error = action.payload || 'Failed to fetch pool public data'
+      })
+
+      // Fetch pool user (LP position + balances)
+      .addCase(fetchPoolUser.fulfilled, (state, action) => {
+        state.lpPosition = action.payload.lpPosition
+        state.poolBaseBalance = action.payload.baseBalance
+        state.poolQuoteBalance = action.payload.quoteBalance
+      })
+
       // Handle logout - clear trading state
       .addCase(logout, (state) => {
         state.lpPosition = null
         state.quote = null
+        state.poolBaseBalance = null
+        state.poolQuoteBalance = null
       })
       .addCase(logoutUser.fulfilled, (state) => {
         state.lpPosition = null
         state.quote = null
+        state.poolBaseBalance = null
+        state.poolQuoteBalance = null
       })
   },
 })
