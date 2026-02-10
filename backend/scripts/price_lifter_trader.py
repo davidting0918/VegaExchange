@@ -1,11 +1,17 @@
 """
-Continuous Trading Script - AMM Pool Swap Volume Generator
+Price Lifter Trading Script - AMM Pool
 
-Logs in as a trader and continuously executes small swaps on AMM-USDT-USDT-SPOT
-to generate trading volume and cause price volatility.
+This trader continuously executes BUY orders to gradually lift the base asset price.
+It primarily buys base assets (pushing price up) and occasionally sells to maintain balance.
+
+Strategy Logic:
+- Primary action: BUY (to push price up)
+- Secondary action: SELL (only when price has risen significantly or to rebalance)
+- Trade size is random within configured range
+- Monitors price movement to ensure upward trend
 
 Usage:
-    python -m backend.scripts.continuous_trader
+    python -m backend.scripts.price_lifter_trader
 """
 
 import os
@@ -23,15 +29,17 @@ except ImportError:
     print("Please install httpx: pip install httpx")
     sys.exit(1)
 
-# Hardcoded config
+# Configuration
 BASE_URL = "http://localhost:8000"
 EMAIL = "lp1@vegaexchange.com"
 PASSWORD = "Lp1!"
 SYMBOL = "VEGA/USDT-USDT:SPOT"
-SYMBOL_PATH = "VEGA-USDT-USDT-SPOT"  # For pool API query params
+SYMBOL_PATH = "VEGA-USDT-USDT-SPOT"
 SWAP_AMOUNT_MIN = 1000
-SWAP_AMOUNT_MAX = 500000
+SWAP_AMOUNT_MAX = 50000
 INTERVAL_SEC = 5
+BUY_PROBABILITY = 0.8  # 80% chance to BUY, 20% chance to SELL (when both available)
+PRICE_INCREASE_TARGET = 0.20  # Target 5% price increase before allowing more SELLs
 
 # OrderSide: BUY=0, SELL=1
 ORDER_SIDE_BUY = 0
@@ -113,12 +121,14 @@ def execute_swap(token: str, side: int, amount_in: float) -> dict:
 
 def main():
     print("=" * 60)
-    print("VegaExchange Continuous Trader")
+    print("Price Lifter Trading Strategy")
     print("=" * 60)
     print(f"Base URL: {BASE_URL}")
     print(f"Email: {EMAIL}")
     print(f"Symbol: {SYMBOL}")
     print(f"Amount range (quote USDT): {SWAP_AMOUNT_MIN}-{SWAP_AMOUNT_MAX}")
+    print(f"BUY Probability: {BUY_PROBABILITY*100:.0f}%")
+    print(f"Price Increase Target: {PRICE_INCREASE_TARGET*100:.1f}%")
     print(f"Interval: {INTERVAL_SEC}s")
     print("=" * 60)
 
@@ -129,14 +139,16 @@ def main():
         print(f"[ERR] Login failed: {e}")
         sys.exit(1)
 
-    # Get initial balances for P&L calculation
+    # Get initial balances and price for P&L calculation
     try:
         initial_base, initial_quote = get_user_balances(token)
         _, _, initial_price = get_pool_data()
         initial_portfolio_value = initial_base * initial_price + initial_quote
+        baseline_price = initial_price  # Track price increase from start
     except Exception as e:
         print(f"[WARN] Could not get initial balances: {e}")
         initial_base = initial_quote = initial_price = initial_portfolio_value = 0.0
+        baseline_price = 0.0
 
     # Statistics tracking
     start_time = datetime.now()
@@ -148,7 +160,7 @@ def main():
     total_fees_paid = 0.0
     price_impacts = []
     trade_sizes = []
-    last_side = ORDER_SIDE_SELL  # Start with BUY next (alternate)
+    price_history = []
 
     try:
         while True:
@@ -156,21 +168,37 @@ def main():
                 # Get balances and pool data
                 base_balance, quote_balance = get_user_balances(token)
                 reserve_base, reserve_quote, current_price = get_pool_data()
+                
+                # Track price history
+                price_history.append(current_price)
+                if len(price_history) > 100:  # Keep last 100 prices
+                    price_history.pop(0)
+                
+                # Calculate price increase from baseline
+                price_increase_pct = ((current_price - baseline_price) / baseline_price * 100) if baseline_price > 0 else 0
 
                 # Available value in quote terms: quote_balance (for BUY), base*price (for SELL)
                 available_buy = quote_balance
                 available_sell_value = base_balance * current_price if current_price > 0 else 0
 
-                # Decide side: randomly choose when both available, else use the only available one
+                # Decide side: prefer BUY to lift price, but allow SELL occasionally
                 can_buy = available_buy >= SWAP_AMOUNT_MIN
                 can_sell = available_sell_value >= SWAP_AMOUNT_MIN
 
+                # Determine side based on strategy
+                side = None
                 if can_buy and can_sell:
-                    # Randomly choose BUY or SELL to create price volatility
-                    side = random.choice([ORDER_SIDE_BUY, ORDER_SIDE_SELL])
+                    # If price has increased significantly, allow more SELLs
+                    if price_increase_pct >= PRICE_INCREASE_TARGET * 100:
+                        # After target increase, allow more balanced trading
+                        side = random.choice([ORDER_SIDE_BUY, ORDER_SIDE_SELL])
+                    else:
+                        # Before target, prefer BUY to lift price
+                        side = ORDER_SIDE_BUY if random.random() < BUY_PROBABILITY else ORDER_SIDE_SELL
                 elif can_buy:
                     side = ORDER_SIDE_BUY
                 elif can_sell:
+                    # Only sell if we can't buy (to maintain some balance)
                     side = ORDER_SIDE_SELL
                 else:
                     print(f"[SKIP] Insufficient balance (base={base_balance:.2f}, quote={quote_balance:.2f})")
@@ -186,7 +214,7 @@ def main():
                     time.sleep(INTERVAL_SEC)
                     continue
                 
-                # Randomly choose quote amount: use uniform distribution for better randomness
+                # Randomly choose quote amount
                 quote_amount = round(random.uniform(SWAP_AMOUNT_MIN, max_quote), 2)
                 
                 # Ensure quote_amount is at least the minimum
@@ -209,7 +237,6 @@ def main():
 
                 result = execute_swap(token, side, amount_in)
                 trade_count += 1
-                last_side = side
 
                 price = result.get("price", 0)
                 qty = result.get("quantity", 0)
@@ -235,7 +262,9 @@ def main():
                 impact_str = f", impact={impact}%" if impact is not None else ""
 
                 print(
-                    f"[{trade_count}] {side_str} quote={quote_amount} -> price={price}, qty={qty}, received={quote}{impact_str}"
+                    f"[{trade_count}] {side_str} quote={quote_amount} -> "
+                    f"price={price:.6f} (+{price_increase_pct:+.2f}% from start), "
+                    f"qty={qty}, received={quote}{impact_str}"
                 )
 
             except httpx.HTTPStatusError as e:
@@ -275,19 +304,30 @@ def main():
         runtime_seconds = runtime.total_seconds()
         runtime_str = f"{int(runtime_seconds // 3600)}h {int((runtime_seconds % 3600) // 60)}m {int(runtime_seconds % 60)}s"
 
-        # Calculate P&L
+        # Calculate P&L and price change
         pnl = final_portfolio_value - initial_portfolio_value
         pnl_pct = (pnl / initial_portfolio_value * 100) if initial_portfolio_value > 0 else 0
+        price_change = final_price - initial_price
+        price_change_pct = ((final_price - initial_price) / initial_price * 100) if initial_price > 0 else 0
 
         # Print comprehensive report
         print("\n" + "=" * 80)
         print("TRADING STRATEGY REPORT")
         print("=" * 80)
-        print(f"Strategy: Continuous Random Trading (Volume Generator)")
+        print(f"Strategy: Price Lifter Trading")
         print(f"Symbol: {SYMBOL}")
         print(f"Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Runtime: {runtime_str}")
+        print("-" * 80)
+        print("PRICE MOVEMENT")
+        print("-" * 80)
+        print(f"Initial Price: {initial_price:.6f}")
+        print(f"Final Price: {final_price:.6f}")
+        print(f"Price Change: {price_change:+.6f} ({price_change_pct:+.2f}%)")
+        if price_history:
+            print(f"Highest Price: {max(price_history):.6f}")
+            print(f"Lowest Price: {min(price_history):.6f}")
         print("-" * 80)
         print("TRADE STATISTICS")
         print("-" * 80)
@@ -301,6 +341,7 @@ def main():
         print(f"Total Buy Volume: {total_buy_amount:,.2f} USDT")
         print(f"Total Sell Volume: {total_sell_amount:,.2f} USDT")
         print(f"Total Trading Volume: {total_buy_amount + total_sell_amount:,.2f} USDT")
+        print(f"Buy/Sell Ratio: {total_buy_amount/total_sell_amount:.2f}" if total_sell_amount > 0 else "Buy/Sell Ratio: N/A (no sells)")
         print(f"Total Fees Paid: {total_fees_paid:,.2f} USDT")
         
         if trade_sizes:
@@ -335,8 +376,9 @@ def main():
         print("STRATEGY SETTINGS")
         print("-" * 80)
         print(f"Trade Amount Range: {SWAP_AMOUNT_MIN:,.0f} - {SWAP_AMOUNT_MAX:,.0f} USDT")
+        print(f"BUY Probability: {BUY_PROBABILITY*100:.0f}%")
+        print(f"Price Increase Target: {PRICE_INCREASE_TARGET*100:.1f}%")
         print(f"Trading Interval: {INTERVAL_SEC}s")
-        print(f"Side Selection: Random (when both BUY/SELL available)")
         print("=" * 80)
 
 
