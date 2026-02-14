@@ -38,6 +38,7 @@ export {
   fetchPortfolio,
   clearUserError,
   clearUserState,
+  wsUserUpdate,
 } from './slices/userSlice'
 
 export {
@@ -52,4 +53,8 @@ export {
   clearQuote,
   clearTradingError,
   clearTradingState,
+  wsPoolUpdate,
+  wsOrderbookUpdate,
+  wsPoolUserUpdate,
+  setOrderbookSnapshot,
 } from './slices/tradingSlice'

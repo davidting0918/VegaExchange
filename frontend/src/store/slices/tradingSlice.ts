@@ -1,7 +1,17 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit'
-import type { TradingState, Symbol, PoolInfo, LPPosition, QuoteResponse, Trade, QuoteRequest } from '../../types'
+import type {
+  TradingState,
+  Symbol,
+  PoolInfo,
+  LPPosition,
+  QuoteResponse,
+  Trade,
+  QuoteRequest,
+  OrderbookLevel,
+} from '../../types'
 import { marketService, tradeService } from '../../api'
 import { logout, logoutUser } from './authSlice'
+import { parseSymbolToPath } from '../../utils/market'
 
 const initialState: TradingState = {
   symbols: [],
@@ -12,6 +22,8 @@ const initialState: TradingState = {
   recentTrades: [],
   poolBaseBalance: null,
   poolQuoteBalance: null,
+  orderbookBySymbol: {},
+  lastPricePointBySymbol: {},
   isLoading: false,
   isQuoteLoading: false,
   error: null,
@@ -177,9 +189,86 @@ const tradingSlice = createSlice({
       state.recentTrades = []
       state.poolBaseBalance = null
       state.poolQuoteBalance = null
+      state.orderbookBySymbol = {}
       state.isLoading = false
       state.isQuoteLoading = false
       state.error = null
+    },
+    // WebSocket: pool update (pool info + trades)
+    wsPoolUpdate: (state, action: PayloadAction<Record<string, unknown>>) => {
+      const d = action.payload
+      const symbol = d.symbol as string
+      if (!symbol || state.currentSymbol !== symbol) return
+      const parsed = parseSymbolToPath(symbol)
+      const base = (d.base as string) ?? parsed?.base ?? ''
+      const quote = (d.quote as string) ?? parsed?.quote ?? ''
+      state.poolInfo = {
+        pool_id: String(d.pool_id ?? ''),
+        symbol_id: Number(d.symbol_id ?? 0),
+        symbol,
+        base,
+        quote,
+        reserve_base: String(d.reserve_base),
+        reserve_quote: String(d.reserve_quote),
+        k_value: String(d.k_value),
+        fee_rate: String(d.fee_rate),
+        total_lp_shares: String(d.total_lp_shares),
+        total_volume_base: String(d.total_volume_base),
+        total_volume_quote: String(d.total_volume_quote),
+        total_fees_collected: String(d.total_fees_collected),
+        current_price: String(d.current_price),
+      }
+      const trades = (d.trades as Array<Record<string, unknown>>) || []
+      state.recentTrades = trades.map((t) => ({
+        ...t,
+        side: t.side === 0 ? 'buy' : 'sell',
+        price: t.price != null ? String(t.price) : '0',
+        quantity: t.quantity != null ? String(t.quantity) : '0',
+        quote_amount: t.quote_amount != null ? String(t.quote_amount) : '0',
+        fee_amount: t.fee_amount != null ? String(t.fee_amount) : '0',
+      })) as Trade[]
+      const pp = d.price_point as { time?: string; price?: number } | undefined
+      if (pp?.time != null && pp?.price != null) {
+        if (!state.lastPricePointBySymbol) state.lastPricePointBySymbol = {}
+        state.lastPricePointBySymbol[symbol] = { time: pp.time, price: Number(pp.price) }
+      }
+    },
+    // WebSocket: orderbook update
+    wsOrderbookUpdate: (
+      state,
+      action: PayloadAction<{ symbol: string; bids: OrderbookLevel[]; asks: OrderbookLevel[] }>
+    ) => {
+      const { symbol, bids, asks } = action.payload
+      state.orderbookBySymbol[symbol] = { bids, asks }
+    },
+    // Set orderbook snapshot (e.g. from initial REST load)
+    setOrderbookSnapshot: (
+      state,
+      action: PayloadAction<{ symbol: string; bids: OrderbookLevel[]; asks: OrderbookLevel[] }>
+    ) => {
+      const { symbol, bids, asks } = action.payload
+      state.orderbookBySymbol[symbol] = { bids, asks }
+    },
+    // WebSocket: user pool data (LP + balances for current symbol)
+    wsPoolUserUpdate: (state, action: PayloadAction<Record<string, unknown>>) => {
+      const pu = action.payload
+      const symbol = pu.symbol as string
+      if (!symbol || state.currentSymbol !== symbol) return
+      const lp = pu.lp_position as Record<string, unknown> | null | undefined
+      state.lpPosition = lp
+        ? {
+            pool_id: String(lp.pool_id ?? ''),
+            symbol,
+            lp_shares: String(lp.lp_shares),
+            share_percentage: String(lp.share_percentage ?? 0),
+            base_amount: String(lp.estimated_base_value ?? 0),
+            quote_amount: String(lp.estimated_quote_value ?? 0),
+            initial_base_amount: String(lp.initial_base_amount ?? 0),
+            initial_quote_amount: String(lp.initial_quote_amount ?? 0),
+          }
+        : null
+      state.poolBaseBalance = pu.base_balance != null ? String(pu.base_balance) : null
+      state.poolQuoteBalance = pu.quote_balance != null ? String(pu.quote_balance) : null
     },
   },
   extraReducers: (builder) => {
@@ -273,5 +362,14 @@ const tradingSlice = createSlice({
   },
 })
 
-export const { setCurrentSymbol, clearQuote, clearTradingError, clearTradingState } = tradingSlice.actions
+export const {
+  setCurrentSymbol,
+  clearQuote,
+  clearTradingError,
+  clearTradingState,
+  wsPoolUpdate,
+  wsOrderbookUpdate,
+  wsPoolUserUpdate,
+  setOrderbookSnapshot,
+} = tradingSlice.actions
 export default tradingSlice.reducer

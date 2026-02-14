@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
+import { useSelector } from 'react-redux'
 import { Card } from '../common'
 import { VolumeBarChart, PriceLineChart } from '../charts'
 import { tradeService } from '../../api'
 import type { PoolInfo } from '../../types'
 import type { LineData } from 'lightweight-charts'
+import type { RootState } from '../../store'
 
 type ChartType = 'price' | 'volume' | 'liquidity'
 type TimeRange = '1H' | '1D' | '1W' | '1M' | '1Y' | 'ALL'
@@ -25,8 +27,11 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({
   const isControlled = controlledTimeRange != null && onTimeRangeChange != null
   const timeRange = isControlled ? controlledTimeRange : internalTimeRange
   const setTimeRange = isControlled ? onTimeRangeChange : setInternalTimeRange
+  const timeRangeRef = useRef<TimeRange>(timeRange)
+  timeRangeRef.current = timeRange
   const [volumeBuckets, setVolumeBuckets] = useState<{ time: string; volume: number }[]>([])
   const [pricePoints, setPricePoints] = useState<{ time: string; price: number }[]>([])
+  const [priceRange, setPriceRange] = useState<{ from: string; to: string } | null>(null)
   const [chartError, setChartError] = useState<string | null>(null)
 
   const chartTypes: { id: ChartType; label: string }[] = [
@@ -37,8 +42,6 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({
 
   const timeRanges: TimeRange[] = ['1H', '1D', '1W', '1M', '1Y', 'ALL']
 
-  const CHART_POLL_INTERVAL_MS = 10_000
-
   const fetchChartData = React.useCallback(() => {
     if (!pool?.symbol) return
     setChartError(null)
@@ -47,38 +50,61 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({
       tradeService
         .getPoolPriceHistory(pool.symbol, period)
         .then((res) => {
-          if (res.success && res.data?.prices) setPricePoints(res.data.prices)
-          else setPricePoints([])
+          if (import.meta.env.DEV) {
+            console.log('[PoolChart] price history', { period, res: res.success ? { pricesCount: res.data?.prices?.length, range: res.data?.range, sample: res.data?.prices?.slice(0, 3) } : res })
+          }
+          if (timeRangeRef.current !== period) return
+          if (res.success && res.data?.prices) {
+            setPricePoints(res.data.prices)
+            setPriceRange(res.data.range ?? null)
+          } else {
+            setPricePoints([])
+            setPriceRange(null)
+          }
         })
         .catch(() => {
+          if (timeRangeRef.current !== period) return
           setPricePoints([])
+          setPriceRange(null)
           setChartError('Failed to load price history')
         })
     } else {
       tradeService
         .getPoolVolumeChart(pool.symbol, period)
         .then((res) => {
+          if (timeRangeRef.current !== period) return
           if (res.success && res.data?.buckets) setVolumeBuckets(res.data.buckets)
           else setVolumeBuckets([])
         })
         .catch(() => {
+          if (timeRangeRef.current !== period) return
           setVolumeBuckets([])
           setChartError('Failed to load volume data')
         })
     }
   }, [pool?.symbol, chartType, timeRange])
 
-  // Initial fetch + refetch when deps change
+  // Initial fetch + refetch when symbol / chartType / timeRange change (not on every pool update)
   useEffect(() => {
     fetchChartData()
   }, [fetchChartData])
 
-  // Poll to pick up new trades (sync with refreshPoolData interval)
+  const lastPricePoint = useSelector((state: RootState) =>
+    pool?.symbol ? state.trading.lastPricePointBySymbol[pool.symbol] ?? null : null
+  )
+
+  // Append WebSocket price point to chart without refetching
   useEffect(() => {
-    if (!pool?.symbol) return
-    const interval = setInterval(fetchChartData, CHART_POLL_INTERVAL_MS)
-    return () => clearInterval(interval)
-  }, [pool?.symbol, fetchChartData])
+    if (chartType !== 'price' || !pool?.symbol || !lastPricePoint) return
+    setPricePoints((prev) => {
+      const t = lastPricePoint.time
+      if (prev.some((p) => p.time === t)) return prev
+      const next = [...prev, { time: t, price: lastPricePoint.price }].sort(
+        (a, b) => new Date(a.time).getTime() - new Date(b.time).getTime()
+      )
+      return next
+    })
+  }, [chartType, pool?.symbol, lastPricePoint])
 
   const volumeData = useMemo(
     () =>
@@ -89,14 +115,24 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({
     [volumeBuckets]
   )
 
-  const priceLineData: LineData[] = useMemo(
-    () =>
-      pricePoints.map((p) => ({
-        time: (new Date(p.time).getTime() / 1000) as unknown as LineData['time'],
-        value: p.price,
-      })),
-    [pricePoints]
-  )
+  // Chart requires strictly ascending time with no duplicates; dedupe by time (keep last)
+  const priceLineData: LineData[] = useMemo(() => {
+    const withTime = pricePoints.map((p) => ({
+      time: new Date(p.time).getTime() / 1000,
+      value: p.price,
+    }))
+    withTime.sort((a, b) => a.time - b.time)
+    const deduped: LineData[] = []
+    for (const pt of withTime) {
+      const t = pt.time as unknown as LineData['time']
+      if (deduped.length > 0 && deduped[deduped.length - 1].time === t) {
+        (deduped[deduped.length - 1] as { time: LineData['time']; value: number }).value = pt.value
+      } else {
+        deduped.push({ time: t, value: pt.value })
+      }
+    }
+    return deduped
+  }, [pricePoints])
 
   const showVolumeChart = chartType === 'volume' || chartType === 'liquidity'
   const showPriceChart = chartType === 'price'
@@ -155,6 +191,7 @@ export const PoolChartSection: React.FC<PoolChartSectionProps> = ({
                 data={priceLineData}
                 height={300}
                 dataSetKey={`price-${timeRange}`}
+                visibleRange={priceRange}
               />
             </div>
           ) : (

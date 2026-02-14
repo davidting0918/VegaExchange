@@ -36,10 +36,10 @@ PASSWORD = "Lp1!"
 SYMBOL = "VEGA/USDT-USDT:SPOT"
 SYMBOL_PATH = "VEGA-USDT-USDT-SPOT"
 SWAP_AMOUNT_MIN = 1000
-SWAP_AMOUNT_MAX = 50000
+SWAP_AMOUNT_MAX = 500000
 INTERVAL_SEC = 5
 BUY_PROBABILITY = 0.8  # 80% chance to BUY, 20% chance to SELL (when both available)
-PRICE_INCREASE_TARGET = 0.20  # Target 5% price increase before allowing more SELLs
+PRICE_INCREASE_TARGET = 0.30  # Target 5% price increase before allowing more SELLs
 
 # OrderSide: BUY=0, SELL=1
 ORDER_SIDE_BUY = 0

@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useTrading, useUser } from '../../hooks'
+import { useAppDispatch, useAppSelector } from '../../hooks'
+import { useTrading, useUser, useWebSocketSubscribe } from '../../hooks'
+import { setOrderbookSnapshot } from '../../store'
 import { Card, CardHeader, Button, LoadingSpinner } from '../common'
 import { TradeHistory } from '../trading/TradeHistory'
 import { CandlestickChart, OrderbookChart } from '../charts'
@@ -17,8 +19,8 @@ export const MarketPage: React.FC = () => {
     market: string
   }>()
   const navigate = useNavigate()
-  
-  // Build symbol from URL path components
+  const dispatch = useAppDispatch()
+
   const decodedSymbol = useMemo(() => {
     if (!base || !quote || !settle || !market) return ''
     return buildSymbolFromPath({ base, quote, settle, market })
@@ -33,9 +35,14 @@ export const MarketPage: React.FC = () => {
 
   const { balances } = useUser()
 
-  // Local state
+  const orderbookFromRedux = useAppSelector(
+    (state) => state.trading.orderbookBySymbol[decodedSymbol]
+  )
+  const orderbook = orderbookFromRedux ?? { bids: [] as OrderbookLevel[], asks: [] as OrderbookLevel[] }
+
+  useWebSocketSubscribe('orderbook', decodedSymbol || undefined)
+
   const [symbolInfo, setSymbolInfo] = useState<SymbolType | null>(null)
-  const [orderbook, setOrderbook] = useState<{ bids: OrderbookLevel[]; asks: OrderbookLevel[] }>({ bids: [], asks: [] })
   const [orderbookLoading, setOrderbookLoading] = useState(true)
   const [userOrders, _setUserOrders] = useState<Order[]>([])
   const [ordersLoading, _setOrdersLoading] = useState(false)
@@ -59,20 +66,29 @@ export const MarketPage: React.FC = () => {
     }
   }, [symbols, decodedSymbol, loadSymbols])
 
-  // Load orderbook
   const loadOrderbook = useCallback(async () => {
     if (!decodedSymbol) return
     try {
       const response = await marketService.getOrderbook(decodedSymbol, 20)
       if (response.success && response.data) {
-        setOrderbook(response.data)
+        const mapLevel = (l: { price: string | number; quantity: string | number }) => ({
+          price: String(l.price),
+          quantity: String(l.quantity),
+        })
+        dispatch(
+          setOrderbookSnapshot({
+            symbol: decodedSymbol,
+            bids: response.data.bids.map(mapLevel),
+            asks: response.data.asks.map(mapLevel),
+          })
+        )
       }
     } catch (err) {
       console.error('Failed to load orderbook:', err)
     } finally {
       setOrderbookLoading(false)
     }
-  }, [decodedSymbol])
+  }, [decodedSymbol, dispatch])
 
   // Load recent trades for CLOB
   const loadTrades = useCallback(async () => {
@@ -84,24 +100,12 @@ export const MarketPage: React.FC = () => {
     }
   }, [decodedSymbol])
 
-  // Initial data load
   useEffect(() => {
     if (decodedSymbol) {
       loadOrderbook()
       loadTrades()
     }
   }, [decodedSymbol, loadOrderbook, loadTrades])
-
-  // Auto refresh orderbook every 2 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (decodedSymbol) {
-        loadOrderbook()
-      }
-    }, 2000)
-
-    return () => clearInterval(interval)
-  }, [decodedSymbol, loadOrderbook])
 
   // Get user balances
   const baseBalance = useMemo(() => {

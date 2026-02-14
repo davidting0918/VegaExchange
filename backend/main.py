@@ -21,6 +21,7 @@ from backend.routers import (
     orderbook_router,
     pool_router,
     users_router,
+    websocket_router,
 )
 
 
@@ -84,6 +85,7 @@ app.include_router(market_router)
 app.include_router(pool_router)        # AMM pool operations
 app.include_router(orderbook_router)   # CLOB orderbook operations
 app.include_router(users_router)
+app.include_router(websocket_router)
 
 
 def custom_openapi():

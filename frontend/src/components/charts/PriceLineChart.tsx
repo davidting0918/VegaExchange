@@ -9,6 +9,8 @@ interface PriceLineChartProps {
   areaBottomColor?: string
   /** When this changes (e.g. chartType-timeRange), fit content. Preserves zoom on refetch when unchanged. */
   dataSetKey?: string
+  /** Optional visible time range (UTC ISO strings). When set, chart x-axis spans this range so 1W always shows 7 days. */
+  visibleRange?: { from: string; to: string } | null
 }
 
 export const PriceLineChart: React.FC<PriceLineChartProps> = ({
@@ -18,6 +20,7 @@ export const PriceLineChart: React.FC<PriceLineChartProps> = ({
   areaTopColor = 'rgba(59, 130, 246, 0.4)',
   areaBottomColor = 'rgba(59, 130, 246, 0.0)',
   dataSetKey,
+  visibleRange,
 }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -89,18 +92,28 @@ export const PriceLineChart: React.FC<PriceLineChartProps> = ({
   // Update data when it changes – preserve visible range on refetch (don't call fitContent)
   const hasFittedRef = useRef(false)
   const lastDataSetKeyRef = useRef<string | undefined>(undefined)
+  const rangeFrom = visibleRange?.from ?? null
+  const rangeTo = visibleRange?.to ?? null
   useEffect(() => {
     if (!seriesRef.current || data.length === 0) return
     seriesRef.current.setData(data)
-    // fitContent on first load or when dataSetKey changes (e.g. time range); refetch keeps zoom
     const keyChanged = dataSetKey !== lastDataSetKeyRef.current
     const shouldFit = !hasFittedRef.current || keyChanged
     if (shouldFit) {
-      chartRef.current?.timeScale().fitContent()
+      const ts = chartRef.current?.timeScale()
+      if (ts) {
+        if (rangeFrom && rangeTo) {
+          const fromSec = Math.floor(new Date(rangeFrom).getTime() / 1000)
+          const toSec = Math.floor(new Date(rangeTo).getTime() / 1000)
+          ts.setVisibleRange({ from: fromSec as LineData['time'], to: toSec as LineData['time'] })
+        } else {
+          ts.fitContent()
+        }
+      }
       hasFittedRef.current = true
       lastDataSetKeyRef.current = dataSetKey
     }
-  }, [data, dataSetKey])
+  }, [data, dataSetKey, rangeFrom, rangeTo])
 
   return (
     <div

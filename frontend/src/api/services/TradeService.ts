@@ -177,7 +177,12 @@ class TradeService {
     period: '1H' | '1D' | '1W' | '1M' | '1Y' | 'ALL' = '1D',
     limit: number = 500
   ): Promise<
-    ApiResponse<{ prices: { time: string; price: number }[]; base?: string; quote?: string }>
+    ApiResponse<{
+      prices: { time: string; price: number }[]
+      range?: { from: string; to: string }
+      base?: string
+      quote?: string
+    }>
   > {
     const response = await apiClient.get(`${API.pool}/chart/price-history`, {
       params: poolParams(symbol, { period, limit }),
@@ -191,6 +196,7 @@ class TradeService {
             time: p.time,
             price: Number(p.price),
           })),
+          range: data.data.range,
           base: data.data.base,
           quote: data.data.quote,
         },

@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react'
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { useTrading, useUser } from '../../hooks'
+import { useTrading, useUser, useWebSocketSubscribe } from '../../hooks'
 import { usePoolPageState } from '../../hooks'
+import { wsService } from '../../api/websocket'
 import { Card, Button, LoadingSpinner, Modal } from '../common'
 import { SwapPanel } from '../trading/SwapPanel'
 import { TradeHistory } from '../trading/TradeHistory'
@@ -38,6 +39,37 @@ export const PoolDetailPage: React.FC = () => {
     refreshPoolData,
   } = useTrading()
 
+  useWebSocketSubscribe('pool', decodedSymbol || undefined)
+  useWebSocketSubscribe('user')
+
+  const pollFallbackRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => {
+    if (!decodedSymbol) return
+    const enablePolling = () => {
+      if (pollFallbackRef.current) return
+      pollFallbackRef.current = setInterval(() => {
+        if (wsService.isConnected()) {
+          if (pollFallbackRef.current) {
+            clearInterval(pollFallbackRef.current)
+            pollFallbackRef.current = null
+          }
+          return
+        }
+        refreshPoolData()
+      }, 10_000)
+    }
+    const t = setTimeout(() => {
+      if (!wsService.isConnected()) enablePolling()
+    }, 3000)
+    return () => {
+      clearTimeout(t)
+      if (pollFallbackRef.current) {
+        clearInterval(pollFallbackRef.current)
+        pollFallbackRef.current = null
+      }
+    }
+  }, [decodedSymbol, refreshPoolData])
+
   const { balances } = useUser()
   const { page, range, input, flipped, setPage, setRange, setInput, setFlipped, setSwapDirection } = usePoolPageState()
 
@@ -50,15 +82,6 @@ export const PoolDetailPage: React.FC = () => {
       selectSymbol(decodedSymbol, 0)
     }
   }, [decodedSymbol, selectSymbol])
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (decodedSymbol) {
-        refreshPoolData()
-      }
-    }, 10000)
-    return () => clearInterval(interval)
-  }, [decodedSymbol, refreshPoolData])
 
   const baseBalance = useMemo(() => {
     if (!poolInfo) return '0'

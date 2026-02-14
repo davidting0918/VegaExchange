@@ -1,4 +1,4 @@
-import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
+import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import type { UserState, User, Balance, PortfolioItem } from '../../types'
 import { userService } from '../../api'
 import { logout, logoutUser } from './authSlice'
@@ -92,6 +92,17 @@ const userSlice = createSlice({
       state.isLoading = false
       state.error = null
     },
+    // WebSocket: user balances (and optionally pool_user is handled in trading slice)
+    wsUserUpdate: (state, action: PayloadAction<{ balances: Array<{ currency: string; available: number; locked: number; total?: number }> }>) => {
+      const { balances } = action.payload
+      if (!Array.isArray(balances)) return
+      state.balances = balances.map((b) => ({
+        currency: b.currency,
+        available: String(b.available),
+        balance: String(b.total ?? b.available),
+        locked: String(b.locked),
+      }))
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -158,5 +169,5 @@ const userSlice = createSlice({
   },
 })
 
-export const { clearUserError, clearUserState } = userSlice.actions
+export const { clearUserError, clearUserState, wsUserUpdate } = userSlice.actions
 export default userSlice.reducer

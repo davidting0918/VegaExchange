@@ -142,6 +142,21 @@ export interface LiquidityResponse {
   share_percentage: string
 }
 
+// ============== CLOB Orderbook Types ==============
+
+// Orderbook level (single price level)
+export interface OrderbookLevel {
+  price: string
+  quantity: string
+  total?: string // Cumulative quantity
+}
+
+// Latest price point from WebSocket (for chart append)
+export interface PricePoint {
+  time: string
+  price: number
+}
+
 // Trading state
 export interface TradingState {
   symbols: Symbol[]
@@ -152,21 +167,14 @@ export interface TradingState {
   recentTrades: Trade[]
   poolBaseBalance: string | null
   poolQuoteBalance: string | null
+  orderbookBySymbol: Record<string, { bids: OrderbookLevel[]; asks: OrderbookLevel[] }>
+  lastPricePointBySymbol: Record<string, PricePoint | null>
   isLoading: boolean
   isQuoteLoading: boolean
   error: string | null
 }
 
-// ============== CLOB Orderbook Types ==============
-
-// Orderbook level (single price level)
-export interface OrderbookLevel {
-  price: string
-  quantity: string
-  total?: string // Cumulative quantity
-}
-
-// Full orderbook data
+// Full orderbook data (CLOB)
 export interface Orderbook {
   symbol: string
   bids: OrderbookLevel[]

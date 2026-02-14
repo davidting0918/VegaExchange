@@ -13,12 +13,15 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.core.auth import get_current_user_id
+from backend.core.balance_utils import get_user_balances as get_user_balances_util
 from backend.core.dependencies import get_router
 from backend.core.db_manager import get_db
 from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType, OrderSide
 from backend.models.requests import AddLiquidityRequest, RemoveLiquidityRequest, SwapRequest
 from backend.models.responses import APIResponse
+from backend.websocket_manager import broadcast_pool as ws_broadcast_pool
+from backend.websocket_manager import broadcast_user as ws_broadcast_user
 
 router = APIRouter(prefix="/api/pool", tags=["amm-pool"])
 
@@ -54,7 +57,7 @@ def parse_symbol_path_components(symbol_path: str) -> tuple[str, str, str, str] 
 def parse_symbol_string(symbol_str: str) -> tuple[str, str, str, str] | None:
     """
     Parse symbol string and return (base, quote, settle, market) components.
-    
+
     Input format: {BASE}/{QUOTE}-{SETTLE}:{MARKET}
     Example: AMM/USDT-USDT:SPOT -> ("AMM", "USDT", "USDT", "SPOT")
     """
@@ -62,6 +65,175 @@ def parse_symbol_string(symbol_str: str) -> tuple[str, str, str, str] | None:
     if not match:
         return None
     return match.group(1), match.group(2), match.group(3), match.group(4)
+
+
+def _format_trade_for_json(t: dict) -> dict:
+    """Ensure trade row is JSON-serializable (e.g. created_at to isoformat)."""
+    out = dict(t)
+    if "created_at" in out and hasattr(out["created_at"], "isoformat"):
+        out["created_at"] = out["created_at"].isoformat()
+    return out
+
+
+async def _build_pool_public_data(
+    symbol_str: str, engine_router: EngineRouter, limit: int = 100
+) -> dict | None:
+    """Build pool public payload (pool info + trades) for WebSocket broadcast."""
+    engine = await engine_router._get_engine(symbol_str, EngineType.AMM)
+    if not engine:
+        return None
+    pool = await engine._get_pool()
+    if not pool:
+        return None
+    db = get_db()
+    trades = await db.read(
+        """
+        SELECT t.trade_id, t.side, t.price, t.quantity, t.quote_amount,
+               t.fee_amount, t.fee_asset, t.created_at
+        FROM trades t
+        JOIN symbol_configs sc USING (symbol_id)
+        WHERE sc.symbol = $1 AND sc.engine_type = 0 AND t.status = 1
+        ORDER BY t.created_at DESC
+        LIMIT $2
+        """,
+        symbol_str,
+        limit,
+    )
+    components = parse_symbol_string(symbol_str)
+    data: dict = {
+        "symbol": symbol_str,
+        "pool_id": pool["pool_id"],
+        "reserve_base": float(pool["reserve_base"]),
+        "reserve_quote": float(pool["reserve_quote"]),
+        "k_value": float(pool["k_value"]),
+        "fee_rate": float(pool["fee_rate"]),
+        "total_volume_base": float(pool["total_volume_base"]),
+        "total_volume_quote": float(pool["total_volume_quote"]),
+        "total_fees_collected": float(pool["total_fees_collected"]),
+        "total_lp_shares": float(pool["total_lp_shares"]),
+        "current_price": float(pool["reserve_quote"]) / float(pool["reserve_base"])
+        if float(pool["reserve_base"]) > 0 else 0,
+        "trades": [_format_trade_for_json(t) for t in trades],
+    }
+    if trades:
+        latest = trades[0]
+        created_at = latest.get("created_at")
+        time_iso = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+        data["price_point"] = {"time": time_iso, "price": float(latest["price"])}
+    if components:
+        base, quote, settle, market = components
+        data["base"] = base
+        data["quote"] = quote
+        data["settle"] = settle
+        data["market"] = market
+    return data
+
+
+async def _build_pool_user_data(
+    symbol_str: str, user_id: str, engine_router: EngineRouter
+) -> dict:
+    """Build pool user payload (LP position + base/quote balances) for WebSocket broadcast."""
+    engine = await engine_router._get_engine(symbol_str, EngineType.AMM)
+    components = parse_symbol_string(symbol_str)
+    empty: dict = {
+        "symbol": symbol_str,
+        "lp_position": None,
+        "base_balance": "0",
+        "quote_balance": "0",
+    }
+    if components:
+        base, quote, settle, market = components
+        empty["base"] = base
+        empty["quote"] = quote
+        empty["settle"] = settle
+        empty["market"] = market
+    if not engine:
+        return empty
+    pool = await engine._get_pool()
+    if not pool:
+        return empty
+    base_asset = engine.base_asset
+    quote_asset = engine.quote_asset
+    position = await engine._get_lp_position(user_id)
+    db = get_db()
+    base_row = await db.read_one(
+        """
+        SELECT available FROM user_balances
+        WHERE user_id = $1 AND currency = $2 AND account_type = 'spot' AND is_active = TRUE
+        """,
+        user_id,
+        base_asset,
+    )
+    quote_row = await db.read_one(
+        """
+        SELECT available FROM user_balances
+        WHERE user_id = $1 AND currency = $2 AND account_type = 'spot' AND is_active = TRUE
+        """,
+        user_id,
+        quote_asset,
+    )
+    base_balance = float(base_row["available"]) if base_row else 0
+    quote_balance = float(quote_row["available"]) if quote_row else 0
+    lp_data: dict | None = None
+    if position and float(position.get("lp_shares", 0)) > 0:
+        user_lp = Decimal(str(position["lp_shares"]))
+        total_lp = Decimal(str(pool["total_lp_shares"]))
+        reserve_base = Decimal(str(pool["reserve_base"]))
+        reserve_quote = Decimal(str(pool["reserve_quote"]))
+        if total_lp > 0:
+            share_ratio = user_lp / total_lp
+            estimated_base = reserve_base * share_ratio
+            estimated_quote = reserve_quote * share_ratio
+        else:
+            share_ratio = Decimal("0")
+            estimated_base = Decimal("0")
+            estimated_quote = Decimal("0")
+        lp_data = {
+            "pool_id": str(position.get("pool_id", "")),
+            "lp_shares": float(position["lp_shares"]),
+            "share_percentage": float(share_ratio),
+            "estimated_base_value": float(estimated_base),
+            "estimated_quote_value": float(estimated_quote),
+            "initial_base_amount": float(position.get("initial_base_amount", 0)),
+            "initial_quote_amount": float(position.get("initial_quote_amount", 0)),
+        }
+    data: dict = {
+        "symbol": symbol_str,
+        "lp_position": lp_data,
+        "base_balance": str(base_balance),
+        "quote_balance": str(quote_balance),
+    }
+    if components:
+        base, quote, settle, market = components
+        data["base"] = base
+        data["quote"] = quote
+        data["settle"] = settle
+        data["market"] = market
+    return data
+
+
+async def _broadcast_pool_and_user(
+    symbol_str: str, user_id: str, engine_router: EngineRouter
+) -> None:
+    """After a pool mutation, broadcast pool and user updates over WebSocket."""
+    pool_data = await _build_pool_public_data(symbol_str, engine_router)
+    if pool_data:
+        await ws_broadcast_pool(symbol_str, pool_data)
+    pool_user_data = await _build_pool_user_data(symbol_str, user_id, engine_router)
+    balances = await get_user_balances_util(user_id, include_total=True)
+    balances_list = [
+        {
+            "currency": b["currency"],
+            "available": float(b["available"]),
+            "locked": float(b["locked"]),
+            "total": float(b.get("total", b["available"] + b["locked"])),
+        }
+        for b in balances
+    ]
+    await ws_broadcast_user(
+        user_id,
+        {"balances": balances_list, "pool_user": pool_user_data},
+    )
 
 
 @router.get("", response_model=APIResponse)
@@ -437,10 +609,12 @@ async def get_pool_price_history(
 
     symbol_id = row["symbol_id"]
     since_ts, _ = _chart_since_and_bucket(period)
+    now_utc = datetime.now(timezone.utc)
 
     # Use AMM pool spot price after each trade when possible, falling back to execution price.
     # engine_data.reserve_quote_after / engine_data.reserve_base_after represents pool state
     # immediately after the trade.
+    # Fetch the most recent `limit` points in the window (DESC), then reverse so chart gets ascending time.
     rows = await db.read(
         """
         SELECT 
@@ -459,23 +633,33 @@ async def get_pool_price_history(
         FROM trades t
         WHERE t.symbol_id = $1 AND t.engine_type = 0 AND t.status = 1
           AND t.created_at >= $2
-        ORDER BY t.created_at ASC
+        ORDER BY t.created_at DESC
         LIMIT $3
         """,
         symbol_id,
         since_ts,
         limit,
     )
+    rows = list(reversed(rows))  # ascending time for chart
+
+    def _to_utc_iso(dt: datetime) -> str:
+        if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).isoformat()
+        return dt.replace(tzinfo=timezone.utc).isoformat()
 
     prices = [
         {
-            "time": r["time"].isoformat() if hasattr(r["time"], "isoformat") else str(r["time"]),
+            "time": _to_utc_iso(r["time"]) if hasattr(r["time"], "isoformat") else str(r["time"]),
             "price": float(r["price"]),
         }
         for r in rows
     ]
 
-    data: dict = {"symbol": symbol_str, "prices": prices}
+    data: dict = {
+        "symbol": symbol_str,
+        "prices": prices,
+        "range": {"from": since_ts.isoformat(), "to": now_utc.isoformat()},
+    }
     if components:
         base, quote, settle, market = components
         data["base"] = base
@@ -640,6 +824,7 @@ async def execute_swap(
         swap_data["quote"] = quote
         swap_data["settle"] = settle
         swap_data["market"] = market
+    await _broadcast_pool_and_user(result.symbol, user_id, router)
     return APIResponse(success=True, data=swap_data)
 
 
@@ -687,6 +872,7 @@ async def add_liquidity(
         add_data["quote"] = quote
         add_data["settle"] = settle
         add_data["market"] = market
+    await _broadcast_pool_and_user(symbol, user_id, router)
     return APIResponse(success=True, data=add_data)
 
 
@@ -736,6 +922,7 @@ async def remove_liquidity(
         remove_data["quote"] = quote
         remove_data["settle"] = settle
         remove_data["market"] = market
+    await _broadcast_pool_and_user(symbol, user_id, router)
     return APIResponse(success=True, data=remove_data)
 
 

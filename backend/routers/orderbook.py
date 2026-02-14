@@ -17,8 +17,11 @@ from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType
 from backend.models.requests import PlaceOrderRequest
 from backend.models.responses import APIResponse
+from backend.websocket_manager import broadcast_orderbook as ws_broadcast_orderbook
 
 router = APIRouter(prefix="/api/orderbook", tags=["clob-orderbook"])
+
+ORDERBOOK_WS_LEVELS = 20
 
 
 @router.get("", response_model=APIResponse)
@@ -175,13 +178,22 @@ async def place_order(
     
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message)
-    
+
+    symbol_upper = symbol.upper()
+    engine = await router._get_engine(symbol_upper, EngineType.CLOB)
+    if engine:
+        order_book = await engine._get_order_book(ORDERBOOK_WS_LEVELS)
+        await ws_broadcast_orderbook(
+            symbol_upper,
+            {"bids": order_book["bids"], "asks": order_book["asks"]},
+        )
+
     return APIResponse(
         success=True,
         data={
             "order_id": str(result.order_id) if result.order_id else None,
             "trade_id": str(result.trade_id) if result.trade_id else None,
-            "symbol": symbol.upper(),
+            "symbol": symbol_upper,
             "side": result.side.value,
             "order_type": request.order_type.value,
             "price": float(request.price) if request.price else float(result.price),
@@ -209,10 +221,17 @@ async def cancel_order(
         raise HTTPException(status_code=404, detail=f"CLOB market '{symbol}' not found")
     
     result = await engine.cancel_order(user_id, order_id)
-    
+
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to cancel order"))
-    
+
+    symbol_upper = symbol.upper()
+    order_book = await engine._get_order_book(ORDERBOOK_WS_LEVELS)
+    await ws_broadcast_orderbook(
+        symbol_upper,
+        {"bids": order_book["bids"], "asks": order_book["asks"]},
+    )
+
     return APIResponse(success=True, data=result)
 
 
