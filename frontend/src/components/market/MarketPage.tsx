@@ -473,6 +473,7 @@ export const MarketPage: React.FC = () => {
               isLoading={isLoading}
               baseToken={symbolInfo.base}
               quoteToken={symbolInfo.quote}
+              symbolKey={decodedSymbol}
             />
           </div>
 

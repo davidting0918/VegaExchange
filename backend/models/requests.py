@@ -57,31 +57,6 @@ class CreatePoolRequest(BaseModel):
         return v
 
 
-class TradeRequest(BaseModel):
-    """Unified trade request - works for all engine types"""
-
-    symbol: str = Field(..., description="Trading pair symbol")
-    side: OrderSide = Field(..., description="Buy or sell")
-    quantity: Optional[Decimal] = Field(None, description="Amount of base asset (for AMM buy, CLOB)")
-    quote_amount: Optional[Decimal] = Field(None, description="Amount of quote asset (for AMM sell)")
-
-    # CLOB-specific fields
-    order_type: Optional[OrderType] = Field(None, description="Order type (for CLOB)")
-    price: Optional[Decimal] = Field(None, description="Limit price (for CLOB limit orders)")
-
-    @field_validator("symbol")
-    @classmethod
-    def uppercase_symbol(cls, v: str) -> str:
-        return v.upper()
-
-    @field_validator("quantity", "quote_amount", "price")
-    @classmethod
-    def validate_positive(cls, v: Optional[Decimal]) -> Optional[Decimal]:
-        if v is not None and v <= 0:
-            raise ValueError("Amount must be positive")
-        return v
-
-
 class SwapRequest(BaseModel):
     """AMM swap request"""
 

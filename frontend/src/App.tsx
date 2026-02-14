@@ -84,7 +84,7 @@ function App() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="trade" element={<TradingPage />} />
         <Route path="trade/:marketId" element={<TradingPage />} />
-        <Route path="pools/:base/:quote/:settle/:market" element={<PoolDetailPage />} />
+        <Route path="pools/:symbolPath" element={<PoolDetailPage />} />
         <Route path="market/:base/:quote/:settle/:market" element={<MarketPage />} />
       </Route>
 

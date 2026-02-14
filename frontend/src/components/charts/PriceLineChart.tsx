@@ -7,6 +7,8 @@ interface PriceLineChartProps {
   lineColor?: string
   areaTopColor?: string
   areaBottomColor?: string
+  /** When this changes (e.g. chartType-timeRange), fit content. Preserves zoom on refetch when unchanged. */
+  dataSetKey?: string
 }
 
 export const PriceLineChart: React.FC<PriceLineChartProps> = ({
@@ -15,6 +17,7 @@ export const PriceLineChart: React.FC<PriceLineChartProps> = ({
   lineColor = '#3B82F6',
   areaTopColor = 'rgba(59, 130, 246, 0.4)',
   areaBottomColor = 'rgba(59, 130, 246, 0.0)',
+  dataSetKey,
 }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -83,13 +86,21 @@ export const PriceLineChart: React.FC<PriceLineChartProps> = ({
     }
   }, [height, lineColor, areaTopColor, areaBottomColor])
 
-  // Update data when it changes
+  // Update data when it changes – preserve visible range on refetch (don't call fitContent)
+  const hasFittedRef = useRef(false)
+  const lastDataSetKeyRef = useRef<string | undefined>(undefined)
   useEffect(() => {
-    if (seriesRef.current && data.length > 0) {
-      seriesRef.current.setData(data)
+    if (!seriesRef.current || data.length === 0) return
+    seriesRef.current.setData(data)
+    // fitContent on first load or when dataSetKey changes (e.g. time range); refetch keeps zoom
+    const keyChanged = dataSetKey !== lastDataSetKeyRef.current
+    const shouldFit = !hasFittedRef.current || keyChanged
+    if (shouldFit) {
       chartRef.current?.timeScale().fitContent()
+      hasFittedRef.current = true
+      lastDataSetKeyRef.current = dataSetKey
     }
-  }, [data])
+  }, [data, dataSetKey])
 
   return (
     <div

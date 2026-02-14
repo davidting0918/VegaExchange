@@ -1,4 +1,5 @@
 import { apiClient } from '../client'
+import { API, poolParams } from '../endpoints'
 import type {
   ApiResponse,
   QuoteRequest,
@@ -6,38 +7,25 @@ import type {
   SwapRequest,
   Trade,
   AddLiquidityRequest,
+  AddLiquidityQuoteResponse,
   RemoveLiquidityRequest,
   LiquidityResponse,
   LPPosition,
   LPEvent,
+  VolumeDataPoint,
 } from '../../types'
-import { toPoolApiPath } from '../../utils/market'
 
 class TradeService {
-  // Convert symbol to pool API path format: {base}/{quote}/{settle}/{market}
-  private toPoolPath(symbol: string): string {
-    return toPoolApiPath(symbol)
+  private sideToInt(side: string): number {
+    return side.toLowerCase() === 'buy' ? 0 : 1
   }
 
   // Get trade quote (preview) - AMM only
   async getQuote(request: QuoteRequest): Promise<ApiResponse<QuoteResponse>> {
-    // New endpoint: GET /api/pool/{symbol}/quote
-    // Query params: side, quantity (base) or quote_amount (quote)
-    const params: Record<string, string> = {
-      side: request.side,
-    }
-    
-    // Determine which parameter to use based on amount_type
-    if (request.amount_type === 'quote') {
-      params.quote_amount = request.amount
-    } else {
-      params.quantity = request.amount
-    }
-    
-    const response = await apiClient.get(
-      `/api/pool/${this.toPoolPath(request.symbol)}/quote`,
-      { params }
-    )
+    const params = request.amount_type === 'quote'
+      ? poolParams(request.symbol, { side: this.sideToInt(request.side), quote_amount: request.amount })
+      : poolParams(request.symbol, { side: this.sideToInt(request.side), quantity: request.amount })
+    const response = await apiClient.get(`${API.pool}/quote`, { params })
     const data = response.data
     
     // Transform backend response to match QuoteResponse type
@@ -62,48 +50,62 @@ class TradeService {
 
   // Execute swap - AMM only
   async swap(request: SwapRequest): Promise<ApiResponse<Trade>> {
-    // New endpoint: POST /api/pool/{symbol}/swap
-    // Body: { symbol, side, amount_in, min_amount_out }
-    const backendRequest = {
+    const backendRequest: Record<string, unknown> = {
       symbol: request.symbol,
-      side: request.side,
+      side: this.sideToInt(request.side),
       amount_in: request.amount,
-      min_amount_out: request.min_output,
     }
-    
-    const response = await apiClient.post(
-      `/api/pool/${this.toPoolPath(request.symbol)}/swap`,
-      backendRequest
-    )
+    if (request.min_output != null && request.min_output !== '') {
+      backendRequest.min_amount_out = request.min_output
+    }
+
+    const response = await apiClient.post(`${API.pool}/swap`, backendRequest)
     return response.data
+  }
+
+  // Get quote for adding liquidity (given base_amount returns quote_amount, or vice versa)
+  async getAddLiquidityQuote(
+    symbol: string,
+    baseAmount?: string,
+    quoteAmount?: string
+  ): Promise<ApiResponse<AddLiquidityQuoteResponse>> {
+    const extra: Record<string, string> = {}
+    if (baseAmount != null && baseAmount !== '') extra.base_amount = baseAmount
+    else if (quoteAmount != null && quoteAmount !== '') extra.quote_amount = quoteAmount
+    else throw new Error('Provide base_amount or quote_amount')
+    const params = poolParams(symbol, extra)
+    const response = await apiClient.get(`${API.pool}/liquidity/add/quote`, { params })
+    const data = response.data
+    if (data.success && data.data) {
+      const q = data.data
+      return {
+        success: true,
+        data: {
+          base_amount: String(q.base_amount),
+          quote_amount: String(q.quote_amount),
+        },
+      }
+    }
+    return data
   }
 
   // Add liquidity to AMM pool
   async addLiquidity(request: AddLiquidityRequest): Promise<ApiResponse<LiquidityResponse>> {
-    // New endpoint: POST /api/pool/{symbol}/liquidity/add
-    const response = await apiClient.post(
-      `/api/pool/${this.toPoolPath(request.symbol)}/liquidity/add`,
-      request
-    )
+    const response = await apiClient.post(`${API.pool}/liquidity/add`, request)
     return response.data
   }
 
   // Remove liquidity from AMM pool
   async removeLiquidity(request: RemoveLiquidityRequest): Promise<ApiResponse<LiquidityResponse>> {
-    // New endpoint: POST /api/pool/{symbol}/liquidity/remove
-    const response = await apiClient.post(
-      `/api/pool/${this.toPoolPath(request.symbol)}/liquidity/remove`,
-      request
-    )
+    const response = await apiClient.post(`${API.pool}/liquidity/remove`, request)
     return response.data
   }
 
   // Get user's LP position for a pool
   async getLPPosition(symbol: string): Promise<ApiResponse<LPPosition>> {
-    // New endpoint: GET /api/pool/{symbol}/liquidity/position
-    const response = await apiClient.get(
-      `/api/pool/${this.toPoolPath(symbol)}/liquidity/position`
-    )
+    const response = await apiClient.get(`${API.pool}/liquidity/position`, {
+      params: poolParams(symbol),
+    })
     const data = response.data
     
     // Transform backend response to match LPPosition type
@@ -128,11 +130,9 @@ class TradeService {
 
   // Get liquidity event history
   async getLPHistory(symbol: string, limit: number = 50): Promise<ApiResponse<LPEvent[]>> {
-    // New endpoint: GET /api/pool/{symbol}/liquidity/history
-    // Note: limit is not supported by the new endpoint, but we keep the param for future use
-    const response = await apiClient.get(
-      `/api/pool/${this.toPoolPath(symbol)}/liquidity/history`
-    )
+    const response = await apiClient.get(`${API.pool}/liquidity/history`, {
+      params: poolParams(symbol),
+    })
     const data = response.data
     
     // Extract events array from response
@@ -145,7 +145,61 @@ class TradeService {
     return data
   }
 
-  // Get user's trade history - now uses /api/user/trades
+  // Pool chart: volume by time bucket (public)
+  async getPoolVolumeChart(
+    symbol: string,
+    period: '1H' | '1D' | '1W' | '1M' | '1Y' | 'ALL' = '1D',
+    limit: number = 100
+  ): Promise<ApiResponse<{ buckets: VolumeDataPoint[]; base?: string; quote?: string }>> {
+    const response = await apiClient.get(`${API.pool}/chart/volume`, {
+      params: poolParams(symbol, { period, limit }),
+    })
+    const data = response.data
+    if (data.success && data.data?.buckets) {
+      return {
+        success: true,
+        data: {
+          buckets: data.data.buckets.map((b: { time: string; volume: number }) => ({
+            time: b.time,
+            volume: Number(b.volume),
+          })),
+          base: data.data.base,
+          quote: data.data.quote,
+        },
+      }
+    }
+    return data
+  }
+
+  // Pool chart: price history from trades (public)
+  async getPoolPriceHistory(
+    symbol: string,
+    period: '1H' | '1D' | '1W' | '1M' | '1Y' | 'ALL' = '1D',
+    limit: number = 500
+  ): Promise<
+    ApiResponse<{ prices: { time: string; price: number }[]; base?: string; quote?: string }>
+  > {
+    const response = await apiClient.get(`${API.pool}/chart/price-history`, {
+      params: poolParams(symbol, { period, limit }),
+    })
+    const data = response.data
+    if (data.success && data.data?.prices) {
+      return {
+        success: true,
+        data: {
+          prices: data.data.prices.map((p: { time: string; price: number }) => ({
+            time: p.time,
+            price: Number(p.price),
+          })),
+          base: data.data.base,
+          quote: data.data.quote,
+        },
+      }
+    }
+    return data
+  }
+
+  // Get user's trade history
   async getTradeHistory(
     symbol?: string,
     engineType?: number,

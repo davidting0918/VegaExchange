@@ -7,7 +7,7 @@ BigNumber.config({
 })
 
 /**
- * Format a number with specified decimal places
+ * Format a number with specified decimal places and thousand separators
  */
 export function formatNumber(
   value: string | number | BigNumber,
@@ -21,7 +21,7 @@ export function formatNumber(
   if (trimZeros) {
     formatted = formatted.replace(/\.?0+$/, '')
   }
-  return formatted
+  return addThousandsSeparator(formatted)
 }
 
 /**
@@ -36,7 +36,7 @@ export function formatUSD(value: string | number | BigNumber, decimals: number =
 }
 
 /**
- * Format crypto amount with appropriate precision
+ * Format crypto amount with appropriate precision and thousand separators
  */
 export function formatCrypto(
   value: string | number | BigNumber,
@@ -53,7 +53,8 @@ export function formatCrypto(
   else if (bn.gte(0.01)) decimals = 6
 
   const formatted = bn.toFixed(decimals).replace(/\.?0+$/, '')
-  return symbol ? `${formatted} ${symbol}` : formatted
+  const withSeparator = addThousandsSeparator(formatted)
+  return symbol ? `${withSeparator} ${symbol}` : withSeparator
 }
 
 /**
@@ -89,23 +90,6 @@ export function formatPriceImpact(value: string | number | BigNumber): string {
   if (percentage.lte(0.01)) return '<0.01%'
   if (percentage.gte(1)) return `${formatted}%`
   return `${formatted}%`
-}
-
-/**
- * Shorten address/hash for display
- */
-export function shortenAddress(address: string, chars: number = 4): string {
-  if (!address) return ''
-  if (address.length <= chars * 2 + 2) return address
-  return `${address.slice(0, chars + 2)}...${address.slice(-chars)}`
-}
-
-/**
- * Format timestamp to locale string
- */
-export function formatTimestamp(timestamp: string | number | Date): string {
-  const date = new Date(timestamp)
-  return date.toLocaleString()
 }
 
 /**

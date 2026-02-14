@@ -6,75 +6,21 @@ This script generates API key/secret pairs for different sources.
 The output includes both plain text (for initial use) and hashed values (for database insertion).
 SQL INSERT statement is shown by default.
 
-Usage:
-    python generate_api_key.py --source frontend
-    python generate_api_key.py --source backend-ui --rate-limit 200
+Uses backend.core.api_key_manager for generation and hashing (same as runtime).
+
+Usage (run from project root so backend is on PYTHONPATH):
+    python -m backend.scripts.generate_api_key --source frontend
+    python -m backend.scripts.generate_api_key --source backend-ui --rate-limit 200
 """
 
 import argparse
-import secrets
 import sys
 
-# Try to import password hashing functions
-try:
-    from passlib.context import CryptContext
-    # Create password context with bcrypt (same as backend/core/password.py)
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    HAS_PASSLIB = True
-except ImportError:
-    HAS_PASSLIB = False
-    pwd_context = None
-
-
-def generate_api_key_pair():
-    """
-    Generate a new API key and secret pair.
-    
-    Returns:
-        Tuple of (api_key, api_secret) as plain text strings.
-        Both are cryptographically secure random tokens.
-    """
-    # Generate 32-byte random tokens and encode as url-safe base64
-    api_key = secrets.token_urlsafe(32)
-    api_secret = secrets.token_urlsafe(64)
-    
-    return api_key, api_secret
-
-
-def hash_api_key(api_key: str) -> str:
-    """
-    Hash an API key for secure storage.
-    
-    Uses the same password hashing mechanism as user passwords.
-    
-    Args:
-        api_key: Plain text API key
-        
-    Returns:
-        Hashed API key string
-    """
-    if not HAS_PASSLIB:
-        raise ImportError(
-            "passlib is required. Install it with: pip install passlib[bcrypt]"
-        )
-    return pwd_context.hash(api_key)
-
-
-def hash_api_secret(api_secret: str) -> str:
-    """
-    Hash an API secret for secure storage.
-    
-    Args:
-        api_secret: Plain text API secret
-        
-    Returns:
-        Hashed API secret string
-    """
-    if not HAS_PASSLIB:
-        raise ImportError(
-            "passlib is required. Install it with: pip install passlib[bcrypt]"
-        )
-    return pwd_context.hash(api_secret)
+from backend.core.api_key_manager import (
+    generate_api_key_pair,
+    hash_api_key,
+    hash_api_secret,
+)
 
 
 def generate_api_key_for_source(
@@ -83,24 +29,19 @@ def generate_api_key_for_source(
 ) -> dict:
     """
     Generate API key and secret pair for a specific source.
-    
+
     Args:
         source: Source identifier (also used as name, e.g., "frontend", "backend-ui", "mobile")
         rate_limit: Rate limit per minute (default: 60)
-    
+
     Returns:
         Dictionary containing plain text and hashed values
     """
-    # Generate key pair
     api_key, api_secret = generate_api_key_pair()
-    
-    # Hash for database storage
     hashed_key = hash_api_key(api_key)
     hashed_secret = hash_api_secret(api_secret)
-    
-    # Source and name are the same
     name = source
-    
+
     return {
         "api_key": api_key,
         "api_secret": api_secret,
@@ -115,7 +56,7 @@ def generate_api_key_for_source(
 def print_output(data: dict):
     """
     Print formatted output with API key information.
-    
+
     Args:
         data: Dictionary containing API key data
     """
@@ -143,7 +84,7 @@ VALUES (
     TRUE
 );
 """)
-    
+
     print("=" * 80)
     print("\n⚠️  IMPORTANT:")
     print("  1. Save the plain text API key and secret securely")
@@ -158,49 +99,39 @@ def main():
         description="Generate API key and secret pairs for VegaExchange",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Generate for frontend
-  python generate_api_key.py --source frontend
-
-  # Generate for backend UI with custom rate limit
-  python generate_api_key.py --source backend-ui --rate-limit 200
-
-  # Generate for mobile app
-  python generate_api_key.py --source mobile
+Examples (run from project root):
+  python -m backend.scripts.generate_api_key --source frontend
+  python -m backend.scripts.generate_api_key --source backend-ui --rate-limit 200
+  python -m backend.scripts.generate_api_key --source mobile
         """,
     )
-    
+
     parser.add_argument(
         "--source",
         type=str,
         required=True,
         help="Source identifier (also used as name, e.g., 'frontend', 'backend-ui', 'mobile', 'admin')",
     )
-    
+
     parser.add_argument(
         "--rate-limit",
         type=int,
         default=60,
         help="Rate limit per minute (default: 60)",
     )
-    
+
     args = parser.parse_args()
-    
-    # Validate rate limit
+
     if args.rate_limit <= 0:
         print("Error: Rate limit must be greater than 0", file=sys.stderr)
         sys.exit(1)
-    
-    # Generate API key pair
+
     try:
         data = generate_api_key_for_source(
             source=args.source,
             rate_limit=args.rate_limit,
         )
-        
-        # Print output (SQL is always shown)
         print_output(data)
-        
     except Exception as e:
         print(f"\nError: {e}", file=sys.stderr)
         sys.exit(1)

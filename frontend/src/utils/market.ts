@@ -37,7 +37,8 @@ export function buildSymbolFromPath(components: SymbolPathComponents): string {
 
 /**
  * Build API path for pool endpoints
- * Returns: "{base}/{quote}/{settle}/{market}"
+ * Returns: "{base}-{quote}-{settle}-{market}"
+ * Example: "AMM-USDT-USDT-SPOT"
  */
 export function toPoolApiPath(symbolStr: string): string {
   const parts = parseSymbolToPath(symbolStr)
@@ -45,24 +46,45 @@ export function toPoolApiPath(symbolStr: string): string {
     // Fallback: just return the symbol as-is
     return symbolStr
   }
-  return `${parts.base}/${parts.quote}/${parts.settle}/${parts.market}`
+  return `${parts.base}-${parts.quote}-${parts.settle}-${parts.market}`
 }
 
 /**
- * Build frontend URL path for pool page
- * Returns: "/pools/{base}/{quote}/{settle}/{market}"
+ * Parse pool URL path (dash-separated) into path components
+ * URL format: "{base}-{quote}-{settle}-{market}"
+ * Example: "AMM-USDT-USDT-SPOT" -> { base: "AMM", quote: "USDT", settle: "USDT", market: "SPOT" }
+ */
+export function parsePoolUrlPath(symbolPath: string): SymbolPathComponents | null {
+  const parts = symbolPath.trim().split('-')
+  if (parts.length !== 4) return null
+  return {
+    base: parts[0].toUpperCase(),
+    quote: parts[1].toUpperCase(),
+    settle: parts[2].toUpperCase(),
+    market: parts[3].toUpperCase(),
+  }
+}
+
+/**
+ * Build frontend URL path for pool page (dash-separated)
+ * Returns: "/pools/{base}-{quote}-{settle}-{market}"
+ * Example: "/pools/AMM-USDT-USDT-SPOT"
  */
 export function toPoolUrlPath(symbol: Symbol | string): string {
-  const symbolStr = typeof symbol === 'string' ? symbol : symbol.symbol
-  const parts = parseSymbolToPath(symbolStr)
-  if (!parts) {
-    // Fallback for simple symbol format
-    if (typeof symbol === 'object') {
-      return `/pools/${symbol.base}/${symbol.quote}/${symbol.settle || symbol.quote}/${symbol.market || 'SPOT'}`
-    }
-    return `/pools/${symbolStr}`
+  const symbolStr = typeof symbol === 'string' ? symbol : (symbol as Symbol).symbol
+  if (
+    typeof symbol === 'object' &&
+    (!symbolStr || !parseSymbolToPath(symbolStr)) &&
+    symbol?.base != null &&
+    symbol?.quote != null
+  ) {
+    const b = symbol.base.toUpperCase()
+    const q = symbol.quote.toUpperCase()
+    const s = (symbol.settle ?? symbol.quote).toString().toUpperCase()
+    const m = (symbol.market ?? 'SPOT').toString().toUpperCase()
+    return `/pools/${b}-${q}-${s}-${m}`
   }
-  return `/pools/${parts.base}/${parts.quote}/${parts.settle}/${parts.market}`
+  return `/pools/${toPoolApiPath(symbolStr || '')}`
 }
 
 /**

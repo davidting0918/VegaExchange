@@ -22,14 +22,30 @@ router = APIRouter(prefix="/api/orderbook", tags=["clob-orderbook"])
 
 
 @router.get("", response_model=APIResponse)
-async def list_orderbook_markets(router: EngineRouter = Depends(get_router)):
+async def list_orderbook_markets(
+    symbol: Optional[str] = Query(None, description="Symbol (e.g. AMM/USDT-USDT:SPOT). When provided, returns single orderbook."),
+    levels: int = Query(20, ge=1, le=100, description="Number of price levels (used when symbol is provided)"),
+    router: EngineRouter = Depends(get_router),
+):
     """
-    List all active CLOB orderbook markets.
-    
-    Returns market configurations and current prices.
+    List all active CLOB orderbook markets, or get a single orderbook when symbol is provided.
     """
+    if symbol:
+        symbol_upper = symbol.upper()
+        engine = await router._get_engine(symbol_upper, EngineType.CLOB)
+        if not engine:
+            raise HTTPException(status_code=404, detail=f"CLOB market '{symbol}' not found")
+        order_book = await engine._get_order_book(levels)
+        return APIResponse(
+            success=True,
+            data={
+                "symbol": symbol_upper,
+                "bids": order_book["bids"],
+                "asks": order_book["asks"],
+            },
+        )
+
     db = get_db()
-    
     markets = await db.read(
         """
         SELECT sc.*
@@ -38,8 +54,6 @@ async def list_orderbook_markets(router: EngineRouter = Depends(get_router)):
         ORDER BY sc.symbol
         """
     )
-    
-    # Get best bid/ask for each market
     result = []
     for market in markets:
         best_bid = await db.read_one(
@@ -58,13 +72,11 @@ async def list_orderbook_markets(router: EngineRouter = Depends(get_router)):
             """,
             market["symbol_id"],
         )
-        
         result.append({
             **market,
             "best_bid": float(best_bid["price"]) if best_bid else None,
             "best_ask": float(best_ask["price"]) if best_ask else None,
         })
-    
     return APIResponse(
         success=True,
         data={
@@ -74,38 +86,10 @@ async def list_orderbook_markets(router: EngineRouter = Depends(get_router)):
     )
 
 
-@router.get("/{symbol}", response_model=APIResponse)
-async def get_orderbook(
-    symbol: str,
-    levels: int = Query(20, ge=1, le=100, description="Number of price levels"),
-    router: EngineRouter = Depends(get_router),
-):
-    """
-    Get orderbook (bids and asks) for a CLOB symbol.
-    
-    Returns aggregated bids and asks at each price level.
-    """
-    engine = await router._get_engine(symbol.upper(), EngineType.CLOB)
-    
-    if not engine:
-        raise HTTPException(status_code=404, detail=f"CLOB market '{symbol}' not found")
-    
-    order_book = await engine._get_order_book(levels)
-    
-    return APIResponse(
-        success=True,
-        data={
-            "symbol": symbol.upper(),
-            "bids": order_book["bids"],
-            "asks": order_book["asks"],
-        },
-    )
-
-
-@router.get("/{symbol}/trades", response_model=APIResponse)
+@router.get("/trades", response_model=APIResponse)
 async def get_orderbook_trades(
-    symbol: str,
-    limit: int = Query(50, ge=1, le=200, description="Number of recent trades"),
+    symbol: str = Query(..., description="Symbol (e.g. AMM/USDT-USDT:SPOT)"),
+    limit: int = Query(100, ge=1, le=200, description="Number of recent trades"),
 ):
     """
     Get recent CLOB trades for a symbol.
@@ -135,20 +119,18 @@ async def get_orderbook_trades(
     )
 
 
-@router.get("/{symbol}/quote", response_model=APIResponse)
+@router.get("/quote", response_model=APIResponse)
 async def get_order_quote(
-    symbol: str,
+    symbol: str = Query(..., description="Symbol (e.g. AMM/USDT-USDT:SPOT)"),
     side: OrderSide = Query(..., description="Buy or sell"),
     quantity: Decimal = Query(..., description="Amount of base asset"),
     router: EngineRouter = Depends(get_router),
 ):
     """
-    Get a quote for a market order on the orderbook.
-    
-    Preview order execution without actually trading.
+    Get a quote for a market order on the orderbook. Preview order execution without actually trading.
     """
     result = await router.get_quote(
-        symbol=symbol,
+        symbol=symbol.upper(),
         side=side,
         quantity=quantity,
         engine_type=EngineType.CLOB,
@@ -171,17 +153,15 @@ async def get_order_quote(
     )
 
 
-@router.post("/{symbol}/order", response_model=APIResponse)
+@router.post("/order", response_model=APIResponse)
 async def place_order(
-    symbol: str,
     request: PlaceOrderRequest,
+    symbol: str = Query(..., description="Symbol (e.g. AMM/USDT-USDT:SPOT)"),
     user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),
 ):
     """
-    Place an order on the CLOB orderbook.
-    
-    Supports limit and market orders.
+    Place an order on the CLOB orderbook. Supports limit and market orders.
     """
     result = await router.execute_trade(
         user_id=user_id,
@@ -213,17 +193,15 @@ async def place_order(
     )
 
 
-@router.post("/{symbol}/order/cancel", response_model=APIResponse)
+@router.post("/order/cancel", response_model=APIResponse)
 async def cancel_order(
-    symbol: str,
+    symbol: str = Query(..., description="Symbol (e.g. AMM/USDT-USDT:SPOT)"),
     order_id: str = Query(..., description="Order ID to cancel"),
     user_id: str = Depends(get_current_user_id),
     router: EngineRouter = Depends(get_router),
 ):
     """
-    Cancel an open order.
-    
-    Only works for orders that are still open or partially filled.
+    Cancel an open order. Only works for orders that are still open or partially filled.
     """
     engine = await router._get_engine(symbol.upper(), EngineType.CLOB)
     
@@ -238,9 +216,9 @@ async def cancel_order(
     return APIResponse(success=True, data=result)
 
 
-@router.get("/{symbol}/orders", response_model=APIResponse)
+@router.get("/orders", response_model=APIResponse)
 async def get_user_orders(
-    symbol: str,
+    symbol: str = Query(..., description="Symbol (e.g. AMM/USDT-USDT:SPOT)"),
     user_id: str = Depends(get_current_user_id),
     status: Optional[List[OrderStatus]] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=200, description="Max results"),

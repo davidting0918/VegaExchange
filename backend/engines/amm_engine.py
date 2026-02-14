@@ -231,6 +231,9 @@ class AMMEngine(BaseEngine):
                 error_message=f"Failed to deduct {input_asset} balance",
             )
 
+        # Ensure output asset row exists (e.g. first time receiving this token)
+        await self.ensure_balance_exists(user_id, output_asset, initial_amount=Decimal("0"))
+
         # Add output asset
         if not await self.update_balance(user_id, output_asset, output_amount):
             # Rollback input deduction

@@ -69,11 +69,11 @@ export interface SwapRequest {
   min_output?: string
 }
 
-// Trade response
+// Trade response (side may be string 'buy'|'sell' or number 0|1 from API)
 export interface Trade {
   trade_id: string
   symbol: string
-  side: TradeSide
+  side: TradeSide | 0 | 1
   engine_type: EngineType
   price: string
   quantity: string
@@ -87,6 +87,19 @@ export interface Trade {
 // Add liquidity request
 export interface AddLiquidityRequest {
   symbol: string
+  base_amount: string
+  quote_amount: string
+}
+
+// Add liquidity quote request (provide one of base_amount or quote_amount)
+export interface AddLiquidityQuoteRequest {
+  symbol: string
+  base_amount?: string
+  quote_amount?: string
+}
+
+// Add liquidity quote response
+export interface AddLiquidityQuoteResponse {
   base_amount: string
   quote_amount: string
 }
@@ -137,6 +150,8 @@ export interface TradingState {
   lpPosition: LPPosition | null
   quote: QuoteResponse | null
   recentTrades: Trade[]
+  poolBaseBalance: string | null
+  poolQuoteBalance: string | null
   isLoading: boolean
   isQuoteLoading: boolean
   error: string | null

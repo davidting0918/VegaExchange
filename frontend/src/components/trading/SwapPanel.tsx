@@ -1,156 +1,372 @@
 import React, { useState, useEffect } from 'react'
-import { Card, CardHeader, Button } from '../common'
+import { Card, Button } from '../common'
 import { formatCrypto, formatPriceImpact, parseNumericInput, isValidAmount } from '../../utils'
 import type { PoolInfo, QuoteResponse, TradeSide } from '../../types'
+
+type ActiveInput = 'base' | 'quote'
+
+/**
+ * AMM constant-product inverse: given desired output, estimate required input.
+ * Matches backend: output = (output_reserve * input_after_fee) / (input_reserve + input_after_fee),
+ * input_after_fee = input * (1 - fee_rate). Solve for input.
+ */
+function estimateInputForOutput(
+  pool: PoolInfo,
+  desiredOutput: number,
+  isBuy: boolean
+): string {
+  const rb = parseFloat(pool.reserve_base)
+  const rq = parseFloat(pool.reserve_quote)
+  const fee = parseFloat(pool.fee_rate)
+  if (rb <= 0 || rq <= 0 || desiredOutput <= 0) return ''
+  const oneMinusFee = Math.max(0.0001, 1 - fee)
+  let inputAfterFee: number
+  if (isBuy) {
+    if (desiredOutput >= rb) return ''
+    inputAfterFee = (desiredOutput * rq) / (rb - desiredOutput)
+  } else {
+    if (desiredOutput >= rq) return ''
+    inputAfterFee = (desiredOutput * rb) / (rq - desiredOutput)
+  }
+  const input = inputAfterFee / oneMinusFee
+  return input > 0 ? String(input) : ''
+}
 
 interface SwapPanelProps {
   pool: PoolInfo | null
   quote: QuoteResponse | null
-  isQuoteLoading: boolean
-  onGetQuote: (amount: string, side: TradeSide) => Promise<void>
-  onSwap: (amount: string, side: TradeSide, slippage: number) => Promise<void>
+  isQuoteLoading?: boolean
+  onGetQuote: (amount: string, side: TradeSide, amountType?: 'base' | 'quote') => Promise<void>
+  onSwap: (amount: string, side: TradeSide) => Promise<void>
   isSwapping?: boolean
   baseBalance?: string
   quoteBalance?: string
+  /** Controlled from URL; when provided, parent owns state. */
+  activeInput?: ActiveInput
+  flipped?: boolean
+  onActiveInputChange?: (input: ActiveInput) => void
+  onFlippedChange?: (flipped: boolean) => void
+  /** When provided, arrow click uses this for both flipped+input in one call (avoids URL race). */
+  onSwapDirectionChange?: (flipped: boolean, input: ActiveInput) => void
 }
+
+type SwapTab = 'swap' | 'limit' | 'buy' | 'sell'
 
 export const SwapPanel: React.FC<SwapPanelProps> = ({
   pool,
   quote,
-  isQuoteLoading,
   onGetQuote,
   onSwap,
   isSwapping = false,
   baseBalance = '0',
   quoteBalance = '0',
+  activeInput: controlledActiveInput,
+  flipped: controlledFlipped,
+  onActiveInputChange,
+  onFlippedChange,
+  onSwapDirectionChange,
 }) => {
-  const [side, setSide] = useState<TradeSide>('buy')
-  const [inputAmount, setInputAmount] = useState('')
-  const [slippage, setSlippage] = useState(0.5) // 0.5%
+  const [activeTab, setActiveTab] = useState<SwapTab>('swap')
+  const [baseAmount, setBaseAmount] = useState('')
+  const [quoteAmount, setQuoteAmount] = useState('')
+  const [internalActiveInput, setInternalActiveInput] = useState<ActiveInput>('base')
+  const [internalFlipped, setInternalFlipped] = useState(false)
+  const isControlledInput = onActiveInputChange != null
+  const isControlledFlipped = onFlippedChange != null
+  const activeInput = isControlledInput ? (controlledActiveInput ?? 'base') : internalActiveInput
+  const flipped = isControlledFlipped ? (controlledFlipped ?? false) : internalFlipped
+  const setActiveInput = isControlledInput ? onActiveInputChange : setInternalActiveInput
+  const setFlipped = isControlledFlipped ? onFlippedChange : setInternalFlipped
 
-  const fromToken = side === 'buy' ? pool?.quote : pool?.base
-  const toToken = side === 'buy' ? pool?.base : pool?.quote
-  const fromBalance = side === 'buy' ? quoteBalance : baseBalance
-  const toBalance = side === 'buy' ? baseBalance : quoteBalance
+  // Upper = top box, lower = bottom box. Swap always executes upper → lower.
+  const upperAmount = flipped ? quoteAmount : baseAmount
+  const lowerAmount = flipped ? baseAmount : quoteAmount
+  const activeInputIsUpper =
+    (flipped && activeInput === 'quote') || (!flipped && activeInput === 'base')
 
-  // Debounced quote fetch
+  // When quote arrives: fill the other field (upper typed → set lower; lower typed → set upper from required input)
   useEffect(() => {
-    if (!inputAmount || !isValidAmount(inputAmount) || !pool) {
-      return
+    if (!quote) return
+    if (activeInputIsUpper) {
+      const output = quote.output_amount
+      if (flipped) setBaseAmount(output)
+      else setQuoteAmount(output)
+    } else {
+      const input = quote.input_amount
+      if (flipped) setQuoteAmount(input)
+      else setBaseAmount(input)
+    }
+  }, [quote, flipped, activeInputIsUpper])
+
+  // Debounced quote fetch: typing in upper → fetch upper→lower; typing in lower → fetch with estimated upper so upper field shows required amount
+  useEffect(() => {
+    if (!pool) return
+
+    if (activeInputIsUpper) {
+      if (!upperAmount || !isValidAmount(upperAmount)) {
+        if (flipped) setBaseAmount('')
+        else setQuoteAmount('')
+        return
+      }
+      const timer = setTimeout(() => {
+        if (flipped) onGetQuote(upperAmount, 'buy', 'quote')
+        else onGetQuote(upperAmount, 'sell', 'base')
+      }, 500)
+      return () => clearTimeout(timer)
     }
 
+    if (!lowerAmount || !isValidAmount(lowerAmount)) {
+      if (flipped) setQuoteAmount('')
+      else setBaseAmount('')
+      return
+    }
+    const desiredOut = parseFloat(lowerAmount)
+    const estimatedUpper = estimateInputForOutput(pool, desiredOut, flipped)
+    if (!estimatedUpper || !isValidAmount(estimatedUpper)) return
     const timer = setTimeout(() => {
-      onGetQuote(inputAmount, side)
+      if (flipped) onGetQuote(estimatedUpper, 'buy', 'quote')
+      else onGetQuote(estimatedUpper, 'sell', 'base')
     }, 500)
-
     return () => clearTimeout(timer)
-  }, [inputAmount, side, pool, onGetQuote])
+  }, [activeInputIsUpper, upperAmount, lowerAmount, flipped, pool, onGetQuote])
 
-  const handleInputChange = (value: string) => {
+  const handleBaseInputChange = (value: string) => {
     const cleaned = parseNumericInput(value)
-    setInputAmount(cleaned)
+    setActiveInput('base')
+    setBaseAmount(cleaned)
   }
 
-  const handleSwapDirection = () => {
-    setSide(side === 'buy' ? 'sell' : 'buy')
-    setInputAmount('')
+  const handleQuoteInputChange = (value: string) => {
+    const cleaned = parseNumericInput(value)
+    setActiveInput('quote')
+    setQuoteAmount(cleaned)
   }
 
-  const handleMaxClick = () => {
-    setInputAmount(fromBalance)
+  const handleBaseMaxClick = () => {
+    setActiveInput('base')
+    setBaseAmount(baseBalance)
+  }
+
+  const handleQuoteMaxClick = () => {
+    setActiveInput('quote')
+    setQuoteAmount(quoteBalance)
+  }
+
+  const handleArrowClick = () => {
+    const newFlipped = !flipped
+    const newInput: ActiveInput = activeInput === 'base' ? 'quote' : 'base'
+    setBaseAmount(quoteAmount)
+    setQuoteAmount(baseAmount)
+    if (onSwapDirectionChange) {
+      onSwapDirectionChange(newFlipped, newInput)
+    } else {
+      setFlipped(newFlipped)
+      setActiveInput(newInput)
+    }
   }
 
   const handleSwap = async () => {
-    if (!inputAmount || !isValidAmount(inputAmount)) return
-    await onSwap(inputAmount, side, slippage / 100)
-    setInputAmount('')
+    // Always upper → lower: spend top asset, receive bottom asset
+    if (flipped) {
+      if (!quoteAmount || !isValidAmount(quoteAmount)) return
+      await onSwap(quoteAmount, 'buy')
+    } else {
+      if (!baseAmount || !isValidAmount(baseAmount)) return
+      await onSwap(baseAmount, 'sell')
+    }
+    setBaseAmount('')
+    setQuoteAmount('')
   }
 
-  const slippageOptions = [0.1, 0.5, 1.0]
+  const hasValidInput = flipped
+    ? quoteAmount && isValidAmount(quoteAmount)
+    : baseAmount && isValidAmount(baseAmount)
+
+  const fromToken = flipped ? pool?.quote : pool?.base
+  const toToken = flipped ? pool?.base : pool?.quote
+
+  const tabs: { id: SwapTab; label: string }[] = [
+    { id: 'swap', label: 'Swap' },
+    { id: 'limit', label: 'Limit' },
+    { id: 'buy', label: 'Buy' },
+    { id: 'sell', label: 'Sell' },
+  ]
 
   return (
     <Card>
-      <CardHeader
-        title="Swap"
-        subtitle="Exchange tokens instantly"
-      />
+      <div className="flex border-b border-border-default">
+        {tabs.map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setActiveTab(id)}
+            className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === id
+                ? 'text-accent-blue border-accent-blue'
+                : 'text-text-secondary border-transparent hover:text-text-primary'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-      {!pool ? (
+      {activeTab !== 'swap' ? (
+        <div className="py-12 text-center text-text-tertiary text-sm">
+          Coming soon
+        </div>
+      ) : !pool ? (
         <div className="text-center py-8 text-text-secondary">
           Select a trading pair to start swapping
         </div>
       ) : (
         <div className="space-y-4">
-          {/* From Token */}
-          <div className="p-4 bg-bg-tertiary rounded-lg">
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-sm text-text-secondary">From</span>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-text-tertiary">
-                  Balance: {formatCrypto(fromBalance)}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleMaxClick}
-                  className="text-xs text-accent-blue hover:underline"
-                >
-                  MAX
-                </button>
+          {/* Top Input - when flipped show quote (USDT), else show base (AMM) */}
+          {flipped ? (
+            <div className="p-4 bg-bg-tertiary rounded-lg">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm text-text-secondary">{pool.quote}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-tertiary">
+                    Balance: {formatCrypto(quoteBalance)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleQuoteMaxClick}
+                    className="text-xs text-accent-blue hover:underline"
+                  >
+                    MAX
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <input
+                  type="text"
+                  value={quoteAmount}
+                  onChange={(e) => handleQuoteInputChange(e.target.value)}
+                  onFocus={() => setActiveInput('quote')}
+                  placeholder="0.00"
+                  className="flex-1 bg-transparent text-2xl font-medium text-text-primary placeholder-text-tertiary focus:outline-none"
+                />
+                <div className="px-3 py-1.5 bg-bg-secondary rounded-lg">
+                  <span className="font-medium text-text-primary">{pool.quote}</span>
+                </div>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <input
-                type="text"
-                value={inputAmount}
-                onChange={(e) => handleInputChange(e.target.value)}
-                placeholder="0.00"
-                className="flex-1 bg-transparent text-2xl font-medium text-text-primary placeholder-text-tertiary focus:outline-none"
-              />
-              <div className="px-3 py-1.5 bg-bg-secondary rounded-lg">
-                <span className="font-medium text-text-primary">{fromToken}</span>
+          ) : (
+            <div className="p-4 bg-bg-tertiary rounded-lg">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm text-text-secondary">{pool.base}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-tertiary">
+                    Balance: {formatCrypto(baseBalance)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleBaseMaxClick}
+                    className="text-xs text-accent-blue hover:underline"
+                  >
+                    MAX
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <input
+                  type="text"
+                  value={baseAmount}
+                  onChange={(e) => handleBaseInputChange(e.target.value)}
+                  onFocus={() => setActiveInput('base')}
+                  placeholder="0.00"
+                  className="flex-1 bg-transparent text-2xl font-medium text-text-primary placeholder-text-tertiary focus:outline-none"
+                />
+                <div className="px-3 py-1.5 bg-bg-secondary rounded-lg">
+                  <span className="font-medium text-text-primary">{pool.base}</span>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Swap Direction Button */}
+          {/* Swap Direction Indicator - click to swap top/bottom asset order */}
           <div className="flex justify-center -my-2 relative z-10">
             <button
               type="button"
-              onClick={handleSwapDirection}
-              className="w-10 h-10 bg-bg-secondary border border-border-default rounded-full flex items-center justify-center hover:border-accent-blue hover:text-accent-blue transition-colors"
+              onClick={handleArrowClick}
+              aria-label="Swap asset order"
+              className="w-10 h-10 bg-bg-secondary border border-border-default rounded-full flex items-center justify-center text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary cursor-pointer transition-colors"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
               </svg>
             </button>
           </div>
 
-          {/* To Token */}
-          <div className="p-4 bg-bg-tertiary rounded-lg">
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-sm text-text-secondary">To (estimated)</span>
-              <span className="text-xs text-text-tertiary">
-                Balance: {formatCrypto(toBalance)}
-              </span>
-            </div>
-            <div className="flex items-center gap-4">
-              <div className="flex-1">
-                {isQuoteLoading ? (
-                  <div className="h-8 bg-bg-secondary rounded animate-pulse" />
-                ) : (
-                  <span className="text-2xl font-medium text-text-primary">
-                    {quote ? formatCrypto(quote.output_amount) : '0.00'}
+          {/* Bottom Input - when flipped show base (AMM), else show quote (USDT) */}
+          {flipped ? (
+            <div className="p-4 bg-bg-tertiary rounded-lg">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm text-text-secondary">{pool.base}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-tertiary">
+                    Balance: {formatCrypto(baseBalance)}
                   </span>
-                )}
+                  <button
+                    type="button"
+                    onClick={handleBaseMaxClick}
+                    className="text-xs text-accent-blue hover:underline"
+                  >
+                    MAX
+                  </button>
+                </div>
               </div>
-              <div className="px-3 py-1.5 bg-bg-secondary rounded-lg">
-                <span className="font-medium text-text-primary">{toToken}</span>
+              <div className="flex items-center gap-4">
+                <input
+                  type="text"
+                  value={baseAmount}
+                  onChange={(e) => handleBaseInputChange(e.target.value)}
+                  onFocus={() => setActiveInput('base')}
+                  placeholder="0.00"
+                  className="flex-1 bg-transparent text-2xl font-medium text-text-primary placeholder-text-tertiary focus:outline-none"
+                />
+                <div className="px-3 py-1.5 bg-bg-secondary rounded-lg">
+                  <span className="font-medium text-text-primary">{pool.base}</span>
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="p-4 bg-bg-tertiary rounded-lg">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm text-text-secondary">{pool.quote}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-tertiary">
+                    Balance: {formatCrypto(quoteBalance)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleQuoteMaxClick}
+                    className="text-xs text-accent-blue hover:underline"
+                  >
+                    MAX
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <input
+                  type="text"
+                  value={quoteAmount}
+                  onChange={(e) => handleQuoteInputChange(e.target.value)}
+                  onFocus={() => setActiveInput('quote')}
+                  placeholder="0.00"
+                  className="flex-1 bg-transparent text-2xl font-medium text-text-primary placeholder-text-tertiary focus:outline-none"
+                />
+                <div className="px-3 py-1.5 bg-bg-secondary rounded-lg">
+                  <span className="font-medium text-text-primary">{pool.quote}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Quote Details */}
-          {quote && (
+          {quote && hasValidInput && (
             <div className="p-4 bg-bg-tertiary/50 rounded-lg space-y-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-text-secondary">Price</span>
@@ -170,59 +386,19 @@ export const SwapPanel: React.FC<SwapPanelProps> = ({
                   {formatCrypto(quote.fee_amount)} {quote.fee_asset}
                 </span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-text-secondary">Min Received</span>
-                <span className="text-text-primary">
-                  {quote.min_output ? formatCrypto(quote.min_output) : '-'} {toToken}
-                </span>
-              </div>
             </div>
           )}
-
-          {/* Slippage Settings */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-text-secondary">Slippage Tolerance</span>
-            </div>
-            <div className="flex gap-2">
-              {slippageOptions.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setSlippage(option)}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    slippage === option
-                      ? 'bg-accent-blue text-white'
-                      : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
-                  }`}
-                >
-                  {option}%
-                </button>
-              ))}
-              <input
-                type="text"
-                value={slippage}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value)
-                  if (!isNaN(val) && val >= 0 && val <= 50) {
-                    setSlippage(val)
-                  }
-                }}
-                className="w-16 px-2 py-1.5 bg-bg-tertiary border border-border-default rounded-lg text-sm text-center text-text-primary focus:outline-none focus:border-accent-blue"
-              />
-            </div>
-          </div>
 
           {/* Swap Button */}
           <Button
             fullWidth
             size="lg"
-            variant={side === 'buy' ? 'success' : 'danger'}
+            variant="primary"
             onClick={handleSwap}
             isLoading={isSwapping}
-            disabled={!inputAmount || !isValidAmount(inputAmount) || !quote}
+            disabled={!hasValidInput || !quote}
           >
-            {side === 'buy' ? `Buy ${pool.base}` : `Sell ${pool.base}`}
+            Swap
           </Button>
         </div>
       )}

@@ -7,6 +7,7 @@ import {
   Legend,
   Tooltip,
 } from 'recharts'
+import { formatPercentage } from '../../utils'
 
 interface LPPieChartData {
   name: string
@@ -32,10 +33,6 @@ export const LPPieChart: React.FC<LPPieChartProps> = ({
     { name: 'Your Share', value: userShare, color: COLORS.user },
     { name: 'Others', value: 100 - userShare, color: COLORS.others },
   ]
-
-  const formatPercentage = (value: number): string => {
-    return `${value.toFixed(2)}%`
-  }
 
   // Custom label renderer
   interface LabelProps {
@@ -72,7 +69,7 @@ export const LPPieChart: React.FC<LPPieChartProps> = ({
         fontSize={12}
         fontWeight="bold"
       >
-        {`${(percent * 100).toFixed(1)}%`}
+        {formatPercentage(percent)}
       </text>
     )
   }
@@ -104,7 +101,7 @@ export const LPPieChart: React.FC<LPPieChartProps> = ({
           }}
           formatter={(value: number | undefined) => {
             if (value === undefined) return ['-', 'Share']
-            return [formatPercentage(value), 'Share']
+            return [formatPercentage(value / 100), 'Share']
           }}
         />
         <Legend
