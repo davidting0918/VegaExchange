@@ -1,6 +1,6 @@
 import { apiClient } from '../client'
 import { API, poolParams, orderbookParams, marketParams } from '../endpoints'
-import type { ApiResponse, Symbol, PoolInfo, Trade, LPPosition } from '../../types'
+import type { ApiResponse, Symbol, PoolInfo, Trade, LPPosition, CandlestickData } from '../../types'
 import { parseSymbolToPath } from '../../utils/market'
 
 // Market data response
@@ -265,6 +265,32 @@ class MarketService {
       return {
         success: true,
         data: data.data.markets,
+      }
+    }
+    return data
+  }
+
+  // Get OHLCV kline data
+  async getKlines(
+    symbol: string,
+    interval: string = '1h',
+    limit: number = 100
+  ): Promise<ApiResponse<CandlestickData[]>> {
+    const response = await apiClient.get(`${API.market}/klines`, {
+      params: marketParams(symbol, { interval, limit }),
+    })
+    const data = response.data
+    if (data.success && data.data?.klines) {
+      return {
+        success: true,
+        data: (data.data.klines as Array<Record<string, unknown>>).map((k) => ({
+          time: Number(k.time),
+          open: Number(k.open),
+          high: Number(k.high),
+          low: Number(k.low),
+          close: Number(k.close),
+          volume: Number(k.volume ?? 0),
+        })),
       }
     }
     return data
