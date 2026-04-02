@@ -85,6 +85,23 @@ class PostgresAsyncClient:
         async with self._pool.acquire() as connection:
             yield connection
 
+    # ================== Transaction Support ==================
+
+    @asynccontextmanager
+    async def transaction(self):
+        """
+        Acquire a connection and start a transaction.
+
+        Usage:
+            async with db.transaction() as conn:
+                await conn.execute("UPDATE ...", ...)
+                await conn.execute("UPDATE ...", ...)
+                # auto-commits on success, auto-rollbacks on exception
+        """
+        async with self.get_connection() as conn:
+            async with conn.transaction():
+                yield conn
+
     # ================== Data Conversion Helpers ==================
 
     def _convert_decimals_to_floats(self, obj: Any) -> Any:

@@ -247,6 +247,21 @@ CREATE INDEX idx_trades_created_at ON trades(created_at DESC);
 CREATE INDEX idx_trades_engine_type ON trades(engine_type);
 
 -- =====================================================
+-- PROTOCOL FEES TABLE (Fee audit trail)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS protocol_fees (
+    id SERIAL PRIMARY KEY,
+    symbol_id INTEGER NOT NULL REFERENCES symbol_configs(symbol_id) ON DELETE CASCADE,
+    fee_amount DECIMAL(36, 18) NOT NULL,
+    fee_asset VARCHAR(20) NOT NULL,
+    source VARCHAR(50) NOT NULL,  -- e.g., 'clob_trade', 'amm_swap'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_protocol_fees_symbol_id ON protocol_fees(symbol_id);
+CREATE INDEX idx_protocol_fees_created_at ON protocol_fees(created_at DESC);
+
+-- =====================================================
 -- LP POSITIONS TABLE
 -- =====================================================
 CREATE TABLE IF NOT EXISTS lp_positions (
