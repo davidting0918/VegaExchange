@@ -4,13 +4,17 @@ CLOB (Central Limit Order Book) Engine
 Implements traditional order book matching with price-time priority.
 """
 
-from datetime import datetime
+import asyncio
+import json
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from backend.core.id_generator import generate_order_id
+from backend.core.id_generator import generate_order_id, generate_trade_id
 from backend.engines.base_engine import BaseEngine, QuoteResult, TradeResult
 from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType, TradeStatus
+
+# Minimum notional value for an order (price * quantity must exceed this)
+DEFAULT_MIN_NOTIONAL = Decimal("1")
 
 
 class CLOBEngine(BaseEngine):
@@ -22,6 +26,8 @@ class CLOBEngine(BaseEngine):
     - Limit and market orders
     - Maker/taker fee distinction
     - Partial fills support
+    - Self-trade prevention
+    - Atomic settlement via database transactions
     """
 
     @property
@@ -30,46 +36,63 @@ class CLOBEngine(BaseEngine):
 
     def _get_fee_rates(self) -> tuple[Decimal, Decimal]:
         """Get maker and taker fee rates from engine params"""
-        maker_fee = Decimal(str(self.engine_params.get("maker_fee", "0.001")))  # 0.1% default
-        taker_fee = Decimal(str(self.engine_params.get("taker_fee", "0.002")))  # 0.2% default
+        maker_fee = Decimal(str(self.engine_params.get("maker_fee", "0.001")))
+        taker_fee = Decimal(str(self.engine_params.get("taker_fee", "0.002")))
         return maker_fee, taker_fee
+
+    def _get_min_notional(self) -> Decimal:
+        """Get minimum notional value from engine params"""
+        return Decimal(str(self.engine_params.get("min_notional", str(DEFAULT_MIN_NOTIONAL))))
 
     async def _get_best_orders(
         self,
         side: OrderSide,
         limit: int = 50,
+        for_update: bool = False,
+        conn=None,
     ) -> List[Dict[str, Any]]:
         """
         Get best orders from the order book.
 
         For BUY side: Get best SELL orders (lowest price first)
         For SELL side: Get best BUY orders (highest price first)
+
+        Args:
+            side: The incoming order side (we fetch the opposite side)
+            limit: Max number of orders to fetch
+            for_update: If True, lock rows with FOR UPDATE SKIP LOCKED
+            conn: Optional database connection (for use within a transaction)
         """
         opposite_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
 
         if opposite_side == OrderSide.SELL:
-            # Get sell orders, lowest price first
             order_clause = "price ASC, created_at ASC"
         else:
-            # Get buy orders, highest price first
             order_clause = "price DESC, created_at ASC"
 
-        orders = await self.db.read(
-            f"""
+        lock_clause = "FOR UPDATE SKIP LOCKED" if for_update else ""
+
+        query = f"""
             SELECT * FROM orderbook_orders
             WHERE symbol_id = $1
             AND side = $2
-            AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
+            AND status IN ({OrderStatus.OPEN.value}, {OrderStatus.PARTIAL.value})
             AND price IS NOT NULL
             ORDER BY {order_clause}
             LIMIT $3
-            """,
+            {lock_clause}
+        """
+
+        if conn:
+            rows = await conn.fetch(query, self.symbol_config["symbol_id"], opposite_side.value, limit)
+            return [dict(r) for r in rows]
+
+        return await self.db.read(
+            query,
             self.symbol_config["symbol_id"],
             opposite_side.value,
             limit,
         )
-
-        return orders
 
     async def _get_order_book(self, levels: int = 20) -> Dict[str, List[Dict[str, Any]]]:
         """Get aggregated order book with bid/ask levels"""
@@ -78,8 +101,8 @@ class CLOBEngine(BaseEngine):
             SELECT price, SUM(remaining_quantity) as quantity, COUNT(*) as order_count
             FROM orderbook_orders
             WHERE symbol_id = $1
-            AND side = {OrderSide.BUY}
-            AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
+            AND side = {OrderSide.BUY.value}
+            AND status IN ({OrderStatus.OPEN.value}, {OrderStatus.PARTIAL.value})
             AND price IS NOT NULL
             GROUP BY price
             ORDER BY price DESC
@@ -94,8 +117,8 @@ class CLOBEngine(BaseEngine):
             SELECT price, SUM(remaining_quantity) as quantity, COUNT(*) as order_count
             FROM orderbook_orders
             WHERE symbol_id = $1
-            AND side = {OrderSide.SELL}
-            AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
+            AND side = {OrderSide.SELL.value}
+            AND status IN ({OrderStatus.OPEN.value}, {OrderStatus.PARTIAL.value})
             AND price IS NOT NULL
             GROUP BY price
             ORDER BY price ASC
@@ -116,9 +139,8 @@ class CLOBEngine(BaseEngine):
         price: Optional[Decimal],
     ) -> str:
         """Create a new order in the order book"""
-        # Generate order ID
         order_id = generate_order_id()
-        
+
         result = await self.db.execute_returning(
             """
             INSERT INTO orderbook_orders (
@@ -143,11 +165,11 @@ class CLOBEngine(BaseEngine):
         order_id: str,
         filled_amount: Decimal,
         new_status: OrderStatus,
+        conn=None,
     ) -> bool:
         """Update order after a fill"""
         if new_status == OrderStatus.FILLED:
-            result = await self.db.execute(
-                """
+            query = """
                 UPDATE orderbook_orders
                 SET filled_quantity = filled_quantity + $2,
                     remaining_quantity = remaining_quantity - $2,
@@ -155,25 +177,22 @@ class CLOBEngine(BaseEngine):
                     filled_at = NOW(),
                     updated_at = NOW()
                 WHERE order_id = $1
-                """,
-                order_id,
-                filled_amount,
-                new_status.value,
-            )
+            """
         else:
-            result = await self.db.execute(
-                """
+            query = """
                 UPDATE orderbook_orders
                 SET filled_quantity = filled_quantity + $2,
                     remaining_quantity = remaining_quantity - $2,
                     status = $3,
                     updated_at = NOW()
                 WHERE order_id = $1
-                """,
-                order_id,
-                filled_amount,
-                new_status.value,
-            )
+            """
+
+        if conn:
+            result = await conn.execute(query, order_id, filled_amount, new_status.value)
+            return "UPDATE 1" in result
+
+        result = await self.db.execute(query, order_id, filled_amount, new_status.value)
         return "UPDATE 1" in result
 
     async def _lock_balance(self, user_id: str, asset: str, amount: Decimal) -> bool:
@@ -195,6 +214,8 @@ class CLOBEngine(BaseEngine):
 
     async def _unlock_balance(self, user_id: str, asset: str, amount: Decimal) -> bool:
         """Unlock balance when order is cancelled or filled"""
+        if amount <= 0:
+            return True
         result = await self.db.execute(
             """
             UPDATE user_balances
@@ -210,8 +231,9 @@ class CLOBEngine(BaseEngine):
         )
         return "UPDATE 1" in result
 
-    async def _settle_trade(
+    async def _settle_trade_atomic(
         self,
+        conn,
         buyer_id: str,
         seller_id: str,
         price: Decimal,
@@ -220,61 +242,86 @@ class CLOBEngine(BaseEngine):
         seller_fee: Decimal,
     ) -> bool:
         """
-        Settle a trade between buyer and seller.
+        Settle a trade atomically within an existing transaction connection.
 
-        Buyer: pays quote_amount (locked), receives base_asset - fee
-        Seller: pays base_asset (locked), receives quote_amount - fee
+        Buyer: locked quote deducted, available base added (minus fee)
+        Seller: locked base deducted, available quote added (minus fee)
         """
         quote_amount = price * quantity
 
-        # Buyer: deduct locked quote, add base
-        buyer_quote_ok = await self.db.execute(
+        # All 4 balance updates use the same connection (already in a transaction)
+        # 1. Buyer: deduct locked quote
+        r1 = await conn.execute(
             """
             UPDATE user_balances
             SET locked = locked - $3,
+                balance = balance - $3,
                 updated_at = NOW()
-            WHERE user_id = $1 AND currency = $2
-            AND locked >= $3
+            WHERE user_id = $1 AND currency = $2 AND locked >= $3
             """,
             buyer_id,
             self.quote_asset,
             quote_amount,
         )
 
-        buyer_base_ok = await self.update_balance(
+        # 2. Buyer: add available base (minus buyer fee)
+        base_received = quantity - buyer_fee
+        r2 = await conn.execute(
+            """
+            UPDATE user_balances
+            SET available = available + $3,
+                balance = balance + $3,
+                updated_at = NOW()
+            WHERE user_id = $1 AND currency = $2
+            """,
             buyer_id,
             self.base_asset,
-            quantity - buyer_fee,
+            base_received,
         )
 
-        # Seller: deduct locked base, add quote
-        seller_base_ok = await self.db.execute(
+        # 3. Seller: deduct locked base
+        r3 = await conn.execute(
             """
             UPDATE user_balances
             SET locked = locked - $3,
+                balance = balance - $3,
                 updated_at = NOW()
-            WHERE user_id = $1 AND currency = $2
-            AND locked >= $3
+            WHERE user_id = $1 AND currency = $2 AND locked >= $3
             """,
             seller_id,
             self.base_asset,
             quantity,
         )
 
-        seller_quote_ok = await self.update_balance(
+        # 4. Seller: add available quote (minus seller fee)
+        quote_received = quote_amount - seller_fee
+        r4 = await conn.execute(
+            """
+            UPDATE user_balances
+            SET available = available + $3,
+                balance = balance + $3,
+                updated_at = NOW()
+            WHERE user_id = $1 AND currency = $2
+            """,
             seller_id,
             self.quote_asset,
-            quote_amount - seller_fee,
+            quote_received,
         )
 
-        return all(
-            [
-                "UPDATE 1" in buyer_quote_ok,
-                buyer_base_ok,
-                "UPDATE 1" in seller_base_ok,
-                seller_quote_ok,
-            ]
-        )
+        # 5. Record protocol fee
+        total_fee = buyer_fee + seller_fee
+        if total_fee > 0:
+            await conn.execute(
+                """
+                INSERT INTO protocol_fees (symbol_id, fee_amount, fee_asset, source)
+                VALUES ($1, $2, $3, 'clob_trade')
+                """,
+                self.symbol_config["symbol_id"],
+                total_fee,
+                self.quote_asset,
+            )
+
+        return all("UPDATE 1" in r for r in [r1, r2, r3, r4])
 
     async def execute_trade(
         self,
@@ -287,7 +334,7 @@ class CLOBEngine(BaseEngine):
         **kwargs,
     ) -> TradeResult:
         """
-        Execute a CLOB order.
+        Execute a CLOB order with atomic settlement.
 
         For limit orders: Add to book if no match, or fill if matching orders exist
         For market orders: Fill immediately against existing orders
@@ -304,29 +351,46 @@ class CLOBEngine(BaseEngine):
                 error_message="price is required for limit orders",
             )
 
+        # Minimum notional validation for limit orders
+        min_notional = self._get_min_notional()
+        if order_type == OrderType.LIMIT and price is not None:
+            notional = price * quantity
+            if notional < min_notional:
+                return TradeResult(
+                    success=False,
+                    error_message=f"Order notional ({notional}) below minimum ({min_notional})",
+                )
+
         maker_fee_rate, taker_fee_rate = self._get_fee_rates()
 
         # Calculate required balance and lock it
         if side == OrderSide.BUY:
-            # Buyer needs to lock quote asset
             if order_type == OrderType.LIMIT:
                 required_amount = price * quantity
             else:
-                # For market orders, we need to estimate
-                # Get best ask to estimate cost
-                asks = await self._get_best_orders(OrderSide.BUY, 1)
-                if not asks:
+                # For market buy: estimate from best ASK (sell orders)
+                best_asks = await self._get_best_orders(OrderSide.BUY, 50)
+                if not best_asks:
                     return TradeResult(
                         success=False,
                         error_message="No sell orders available for market buy",
                     )
-                # Use best ask price * 1.1 as safety margin
-                estimated_price = Decimal(str(asks[0]["price"])) * Decimal("1.1")
-                required_amount = estimated_price * quantity
+                # Calculate exact required amount from available depth
+                remaining_qty = quantity
+                estimated_cost = Decimal("0")
+                for ask in best_asks:
+                    ask_price = Decimal(str(ask["price"]))
+                    ask_qty = Decimal(str(ask["remaining_quantity"]))
+                    fill_qty = min(remaining_qty, ask_qty)
+                    estimated_cost += ask_price * fill_qty
+                    remaining_qty -= fill_qty
+                    if remaining_qty <= 0:
+                        break
+                # Add 5% safety margin for the depth-based estimate
+                required_amount = estimated_cost * Decimal("1.05")
 
             lock_asset = self.quote_asset
         else:
-            # Seller needs to lock base asset
             required_amount = quantity
             lock_asset = self.base_asset
 
@@ -343,150 +407,181 @@ class CLOBEngine(BaseEngine):
                 error_message=f"Failed to lock {lock_asset} balance",
             )
 
-        # Get matching orders
-        matching_orders = await self._get_best_orders(side)
-
+        # Match and settle within a transaction
         fills: List[Dict[str, Any]] = []
         remaining_quantity = quantity
         total_filled_quantity = Decimal("0")
         total_quote_amount = Decimal("0")
         total_fee = Decimal("0")
+        first_taker_trade_id: Optional[str] = None
 
-        # Try to match against existing orders
-        for order in matching_orders:
-            if remaining_quantity <= 0:
-                break
+        try:
+            async with self.db.transaction() as conn:
+                # Get matching orders with row-level locks to prevent race conditions
+                matching_orders = await self._get_best_orders(
+                    side, limit=50, for_update=True, conn=conn
+                )
 
-            order_price = Decimal(str(order["price"]))
-            order_remaining = Decimal(str(order["remaining_quantity"]))
+                for order in matching_orders:
+                    if remaining_quantity <= 0:
+                        break
 
-            # Check if price matches
-            if order_type == OrderType.LIMIT:
-                if side == OrderSide.BUY and order_price > price:
-                    break  # No more matches possible
-                if side == OrderSide.SELL and order_price < price:
-                    break
+                    # Self-trade prevention: skip own orders
+                    if order["user_id"] == user_id:
+                        continue
 
-            # Calculate fill amount
-            fill_quantity = min(remaining_quantity, order_remaining)
-            fill_quote = order_price * fill_quantity
+                    order_price = Decimal(str(order["price"]))
+                    order_remaining = Decimal(str(order["remaining_quantity"]))
 
-            # Determine maker/taker
-            # The existing order is the maker, incoming order is taker
-            taker_fee = fill_quote * taker_fee_rate
-            maker_fee = fill_quote * maker_fee_rate
+                    # Check if price matches (limit orders only)
+                    if order_type == OrderType.LIMIT:
+                        if side == OrderSide.BUY and order_price > price:
+                            break
+                        if side == OrderSide.SELL and order_price < price:
+                            break
 
-            # Settle the trade
-            if side == OrderSide.BUY:
-                buyer_id = user_id
-                seller_id = order["user_id"]
-                buyer_fee = taker_fee
-                seller_fee = maker_fee
-            else:
-                buyer_id = order["user_id"]
-                seller_id = user_id
-                buyer_fee = maker_fee
-                seller_fee = taker_fee
+                    # Calculate fill
+                    fill_quantity = min(remaining_quantity, order_remaining)
+                    fill_quote = order_price * fill_quantity
 
-            if not await self._settle_trade(
-                buyer_id,
-                seller_id,
-                order_price,
-                fill_quantity,
-                buyer_fee,
-                seller_fee,
-            ):
-                # Settlement failed, stop matching
-                break
+                    taker_fee = fill_quote * taker_fee_rate
+                    maker_fee = fill_quote * maker_fee_rate
 
-            # Update the matched order
-            new_status = (
-                OrderStatus.FILLED if fill_quantity >= order_remaining else OrderStatus.PARTIAL
+                    if side == OrderSide.BUY:
+                        buyer_id = user_id
+                        seller_id = order["user_id"]
+                        buyer_fee = taker_fee
+                        seller_fee = maker_fee
+                    else:
+                        buyer_id = order["user_id"]
+                        seller_id = user_id
+                        buyer_fee = maker_fee
+                        seller_fee = taker_fee
+
+                    # Atomic settlement within the transaction
+                    if not await self._settle_trade_atomic(
+                        conn, buyer_id, seller_id,
+                        order_price, fill_quantity,
+                        buyer_fee, seller_fee,
+                    ):
+                        break
+
+                    # Update matched order status
+                    new_status = (
+                        OrderStatus.FILLED if fill_quantity >= order_remaining else OrderStatus.PARTIAL
+                    )
+                    await self._update_order(order["order_id"], fill_quantity, new_status, conn=conn)
+
+                    # Record taker trade
+                    taker_trade_id = generate_trade_id()
+                    await conn.execute(
+                        """
+                        INSERT INTO trades (
+                            trade_id, symbol_id, user_id, side, engine_type,
+                            price, quantity, quote_amount,
+                            fee_amount, fee_asset, status, engine_data, counterparty
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                        """,
+                        taker_trade_id,
+                        self.symbol_config["symbol_id"],
+                        user_id,
+                        side.value,
+                        EngineType.CLOB.value,
+                        order_price,
+                        fill_quantity,
+                        fill_quote,
+                        taker_fee,
+                        self.quote_asset,
+                        TradeStatus.COMPLETED.value,
+                        json.dumps({"is_taker": True, "matched_order_id": order["order_id"]}),
+                        order["user_id"],
+                    )
+
+                    # Record maker trade
+                    maker_trade_id = generate_trade_id()
+                    maker_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
+                    await conn.execute(
+                        """
+                        INSERT INTO trades (
+                            trade_id, symbol_id, user_id, side, engine_type,
+                            price, quantity, quote_amount,
+                            fee_amount, fee_asset, status, engine_data, counterparty
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                        """,
+                        maker_trade_id,
+                        self.symbol_config["symbol_id"],
+                        order["user_id"],
+                        maker_side.value,
+                        EngineType.CLOB.value,
+                        order_price,
+                        fill_quantity,
+                        fill_quote,
+                        maker_fee,
+                        self.quote_asset,
+                        TradeStatus.COMPLETED.value,
+                        json.dumps({"is_taker": False, "matched_order_id": order["order_id"]}),
+                        user_id,
+                    )
+
+                    if first_taker_trade_id is None:
+                        first_taker_trade_id = taker_trade_id
+
+                    fills.append(
+                        {
+                            "trade_id": taker_trade_id,
+                            "price": float(order_price),
+                            "quantity": float(fill_quantity),
+                            "quote_amount": float(fill_quote),
+                            "fee": float(taker_fee),
+                            "matched_order_id": order["order_id"],
+                        }
+                    )
+
+                    remaining_quantity -= fill_quantity
+                    total_filled_quantity += fill_quantity
+                    total_quote_amount += fill_quote
+                    total_fee += taker_fee
+
+        except Exception as e:
+            # Transaction auto-rolled back. Unlock the full locked amount.
+            await self._unlock_balance(user_id, lock_asset, required_amount)
+            return TradeResult(
+                success=False,
+                error_message=f"Trade execution failed: {str(e)}",
             )
-            await self._update_order(order["order_id"], fill_quantity, new_status)
 
-            # Record trades for both parties
-            # Taker trade (incoming order)
-            taker_trade_id = await self.record_trade(
-                user_id=user_id,
-                side=side,
-                price=order_price,
-                quantity=fill_quantity,
-                quote_amount=fill_quote,
-                fee_amount=taker_fee,
-                fee_asset=self.quote_asset,
-                status=TradeStatus.COMPLETED,
-                engine_data={"is_taker": True, "matched_order_id": order["order_id"]},
-                counterparty_user_id=order["user_id"],
-            )
-
-            # Maker trade (existing order)
-            await self.record_trade(
-                user_id=order["user_id"],
-                side=OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY,
-                price=order_price,
-                quantity=fill_quantity,
-                quote_amount=fill_quote,
-                fee_amount=maker_fee,
-                fee_asset=self.quote_asset,
-                status=TradeStatus.COMPLETED,
-                engine_data={"is_taker": False, "matched_order_id": order["order_id"]},
-                counterparty_user_id=user_id,
-            )
-
-            fills.append(
-                {
-                    "price": float(order_price),
-                    "quantity": float(fill_quantity),
-                    "quote_amount": float(fill_quote),
-                    "fee": float(taker_fee),
-                    "matched_order_id": order["order_id"],
-                }
-            )
-
-            remaining_quantity -= fill_quantity
-            total_filled_quantity += fill_quantity
-            total_quote_amount += fill_quote
-            total_fee += taker_fee
-
-        # Handle unfilled quantity for limit orders
+        # Handle unfilled quantity
         order_id = None
         if remaining_quantity > 0 and order_type == OrderType.LIMIT:
-            # Create a new order for the remaining quantity
+            # Rest remaining quantity on the book
             order_id = await self._create_order(
-                user_id,
-                side,
-                order_type,
-                remaining_quantity,
-                price,
+                user_id, side, order_type, remaining_quantity, price,
             )
-        elif remaining_quantity > 0:
-            # Market order couldn't fill completely - unlock remaining
-            if side == OrderSide.BUY:
-                # Unlock unused quote
-                asks = await self._get_best_orders(OrderSide.BUY, 1)
-                if asks:
-                    estimated_price = Decimal(str(asks[0]["price"])) * Decimal("1.1")
-                    unused_quote = estimated_price * remaining_quantity
-                    await self._unlock_balance(user_id, self.quote_asset, unused_quote)
-            else:
-                # Unlock remaining base
-                await self._unlock_balance(user_id, self.base_asset, remaining_quantity)
+        elif remaining_quantity > 0 and side == OrderSide.BUY:
+            # Market buy: unlock unused locked quote
+            actual_used_quote = sum(Decimal(str(f["quote_amount"])) for f in fills)
+            unused_quote = required_amount - actual_used_quote
+            await self._unlock_balance(user_id, self.quote_asset, unused_quote)
+        elif remaining_quantity > 0 and side == OrderSide.SELL:
+            # Market sell: unlock remaining base
+            await self._unlock_balance(user_id, self.base_asset, remaining_quantity)
 
-        # Calculate average price
-        avg_price = total_quote_amount / total_filled_quantity if total_filled_quantity > 0 else Decimal("0")
-
+        # Market order with no fills
         if total_filled_quantity == 0 and order_type == OrderType.MARKET:
-            # Market order with no fills
             await self._unlock_balance(user_id, lock_asset, required_amount)
             return TradeResult(
                 success=False,
                 error_message="No matching orders found",
             )
 
+        avg_price = total_quote_amount / total_filled_quantity if total_filled_quantity > 0 else Decimal("0")
+
+        # Fire-and-forget WebSocket broadcast (if manager available)
+        asyncio.create_task(self._broadcast_trade_event(side, fills))
+
         return TradeResult(
             success=True,
-            trade_id=fills[0]["matched_order_id"] if fills else None,
+            trade_id=first_taker_trade_id,
             symbol=self.symbol,
             side=side,
             engine_type=EngineType.CLOB,
@@ -505,6 +600,33 @@ class CLOBEngine(BaseEngine):
                 "fills_count": len(fills),
             },
         )
+
+    async def _broadcast_trade_event(self, side: OrderSide, fills: List[Dict[str, Any]]):
+        """Broadcast trade events via WebSocket (no-op if manager not available)"""
+        try:
+            from backend.core.websocket_manager import get_ws_manager
+            manager = get_ws_manager()
+            if manager and fills:
+                symbol = self.symbol
+                # Broadcast new trades
+                for fill in fills:
+                    await manager.broadcast(f"trades:{symbol}", {
+                        "type": "trade",
+                        "symbol": symbol,
+                        "price": fill["price"],
+                        "quantity": fill["quantity"],
+                        "side": side.value,
+                    })
+                # Broadcast updated orderbook
+                order_book = await self._get_order_book(20)
+                await manager.broadcast(f"orderbook:{symbol}", {
+                    "type": "orderbook",
+                    "symbol": symbol,
+                    "bids": order_book["bids"],
+                    "asks": order_book["asks"],
+                })
+        except Exception:
+            pass  # WebSocket broadcast is best-effort
 
     async def get_quote(
         self,
@@ -588,7 +710,6 @@ class CLOBEngine(BaseEngine):
         best_bid = Decimal(str(order_book["bids"][0]["price"])) if order_book["bids"] else None
         best_ask = Decimal(str(order_book["asks"][0]["price"])) if order_book["asks"] else None
 
-        # Calculate mid price and spread
         if best_bid and best_ask:
             mid_price = (best_bid + best_ask) / 2
             spread = best_ask - best_bid
@@ -598,15 +719,15 @@ class CLOBEngine(BaseEngine):
             spread = None
             spread_pct = None
 
-        # Get recent trade for current price
         last_trade = await self.db.read_one(
             """
             SELECT price, quantity, created_at FROM trades
-            WHERE symbol_id = $1
+            WHERE symbol_id = $1 AND engine_type = $2
             ORDER BY created_at DESC
             LIMIT 1
             """,
             self.symbol_config["symbol_id"],
+            EngineType.CLOB.value,
         )
 
         return {
@@ -622,44 +743,61 @@ class CLOBEngine(BaseEngine):
         }
 
     async def cancel_order(self, user_id: str, order_id: str) -> Dict[str, Any]:
-        """Cancel an open order"""
-        # Get order details
-        order = await self.db.read_one(
-            f"""
-            SELECT * FROM orderbook_orders
-            WHERE order_id = $1 AND user_id = $2
-            AND status IN ({OrderStatus.OPEN}, {OrderStatus.PARTIAL})
-            """,
-            order_id,
-            user_id,
-        )
+        """Cancel an open order with race-condition safety"""
+        async with self.db.transaction() as conn:
+            # Lock the order row to prevent concurrent cancel + fill
+            row = await conn.fetchrow(
+                f"""
+                SELECT * FROM orderbook_orders
+                WHERE order_id = $1 AND user_id = $2
+                AND status IN ({OrderStatus.OPEN.value}, {OrderStatus.PARTIAL.value})
+                FOR UPDATE
+                """,
+                order_id,
+                user_id,
+            )
 
-        if not order:
-            return {"success": False, "error": "Order not found or already filled/cancelled"}
+            if not row:
+                return {"success": False, "error": "Order not found or already filled/cancelled"}
 
-        # Unlock remaining balance
-        remaining = Decimal(str(order["remaining_quantity"]))
-        if order["side"] == OrderSide.BUY:
-            unlock_asset = self.quote_asset
-            unlock_amount = Decimal(str(order["price"])) * remaining
-        else:
-            unlock_asset = self.base_asset
-            unlock_amount = remaining
+            order = dict(row)
+            remaining = Decimal(str(order["remaining_quantity"]))
 
-        await self._unlock_balance(user_id, unlock_asset, unlock_amount)
+            # Use int comparison (DB returns int for side)
+            if order["side"] == OrderSide.BUY.value:
+                unlock_asset = self.quote_asset
+                unlock_amount = Decimal(str(order["price"])) * remaining
+            else:
+                unlock_asset = self.base_asset
+                unlock_amount = remaining
 
-        # Update order status
-        await self.db.execute(
-            """
-            UPDATE orderbook_orders
-            SET status = $2,
-                cancelled_at = NOW(),
-                updated_at = NOW()
-            WHERE order_id = $1
-            """,
-            order_id,
-            OrderStatus.CANCELLED.value,
-        )
+            # Unlock balance
+            await conn.execute(
+                """
+                UPDATE user_balances
+                SET available = available + $3,
+                    locked = locked - $3,
+                    updated_at = NOW()
+                WHERE user_id = $1 AND currency = $2
+                AND locked >= $3
+                """,
+                user_id,
+                unlock_asset,
+                unlock_amount,
+            )
+
+            # Update order status
+            await conn.execute(
+                """
+                UPDATE orderbook_orders
+                SET status = $2,
+                    cancelled_at = NOW(),
+                    updated_at = NOW()
+                WHERE order_id = $1
+                """,
+                order_id,
+                OrderStatus.CANCELLED.value,
+            )
 
         return {
             "success": True,

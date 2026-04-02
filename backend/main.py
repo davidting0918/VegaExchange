@@ -6,7 +6,7 @@ FastAPI application entry point.
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
@@ -14,6 +14,7 @@ from scalar_fastapi import get_scalar_api_reference
 
 from backend.core.db_manager import close_database, init_database
 from backend.core.environment import env_config
+from backend.core.websocket_manager import init_ws_manager
 from backend.routers import (
     admin_router,
     auth_router,
@@ -31,6 +32,8 @@ async def lifespan(app: FastAPI):
     print(f"Starting VegaExchange in {env_config.environment.value} mode...")
     await init_database()
     print("Database connection established.")
+    init_ws_manager()
+    print("WebSocket manager initialized.")
 
     yield
 
@@ -153,6 +156,45 @@ async def root():
             "redoc": "/redoc",
         },
     }
+
+
+@app.websocket("/api/ws")
+async def websocket_endpoint(ws: WebSocket, token: str = Query(default=None)):
+    """
+    WebSocket endpoint for real-time market data.
+
+    Connect: ws://localhost:8000/api/ws?token=JWT_TOKEN
+    Token is optional for public channels, required for user channels.
+
+    Subscribe:   {"action": "subscribe", "channel": "orderbook:BTC/USDT-USDT:SPOT"}
+    Unsubscribe: {"action": "unsubscribe", "channel": "orderbook:BTC/USDT-USDT:SPOT"}
+
+    Channels:
+    - orderbook:{symbol}  (public)  - Order book updates
+    - trades:{symbol}     (public)  - New trades
+    - ticker:{symbol}     (public)  - Price ticker
+    - user:{user_id}      (private) - Order fills, balance changes
+    """
+    await ws.accept()
+
+    # Try to authenticate if token provided
+    user_id = None
+    if token:
+        try:
+            from backend.core.jwt import verify_token
+            payload = verify_token(token)
+            if payload and payload.get("type") == "access":
+                user_id = payload.get("sub")
+        except Exception:
+            pass  # Invalid token — still allow public channels
+
+    from backend.core.websocket_manager import get_ws_manager
+    manager = get_ws_manager()
+    if not manager:
+        await ws.close(code=1011, reason="WebSocket manager not initialized")
+        return
+
+    await manager.handle_client(ws, user_id)
 
 
 @app.get("/health")
