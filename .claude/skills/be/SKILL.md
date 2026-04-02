@@ -115,20 +115,32 @@ Follow the git workflow defined in CLAUDE.md:
 
 #### Schema Change Protocol
 
+**CRITICAL: `database/schema.sql` is the single source of truth for the entire database structure.**
+A new environment must be able to use `schema.sql` alone to set up the complete database.
+Any table, column, index, view, trigger, or constraint change **MUST** be reflected in `schema.sql`.
+
 When modifying the database schema:
 
-1. Update `database/schema.sql` with the new/modified DDL
+1. **ALWAYS update `database/schema.sql` first** — this is the canonical schema definition.
+   New environments rely on this file to create the full database from scratch.
 2. Read the PostgreSQL connection string from `backend/.env` (`POSTGRES_STAGING`)
 3. Generate and execute the migration SQL (ALTER TABLE, CREATE TABLE, etc.) against staging
+   using Python + asyncpg (psql may not be available):
+   ```python
+   python -c "
+   import asyncio, asyncpg
+   async def main():
+       conn = await asyncpg.connect('CONNECTION_STRING')
+       await conn.execute('CREATE TABLE IF NOT EXISTS ...')
+       await conn.close()
+   asyncio.run(main())
+   "
+   ```
 4. If tables have invalid data blocking the change — **drop and recreate**. This is a playground.
-5. If adding new tables, also add the `updated_at` trigger (following existing pattern)
+5. If adding new tables, also add the `updated_at` trigger (following existing pattern in schema.sql)
 6. Update any affected Pydantic models in `backend/models/`
 7. Update any affected engine code or router code
-
-```bash
-# Example: execute SQL against staging
-psql "$POSTGRES_STAGING" -c "ALTER TABLE ... ;"
-```
+8. If the DB user lacks CREATE permission, note it in the PR for the user to apply manually
 
 ---
 

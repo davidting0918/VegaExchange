@@ -124,3 +124,14 @@ The Vite dev server proxies `/api` requests to the backend at `http://localhost:
 - `docs/<description>` — documentation updates
 
 **Important:** Never commit directly to `master`. All changes go through PRs.
+
+**PR content rules:**
+- Do NOT mention Claude, AI, or any AI tool in PR titles, descriptions, or commit messages
+- No "Generated with Claude Code" or similar footers
+
+## Database Schema Rules
+
+- **`database/schema.sql` is the single source of truth** for the entire database structure
+- A new environment must be able to use `schema.sql` alone to create the complete database from scratch
+- Any table, column, index, view, trigger, or constraint change **MUST** be reflected in `schema.sql`
+- When modifying the database, always update `schema.sql` first, then apply the migration to the running environment
