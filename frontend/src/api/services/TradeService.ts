@@ -1,5 +1,5 @@
 import { apiClient } from '../client'
-import { API, poolParams } from '../endpoints'
+import { API, poolParams, orderbookParams } from '../endpoints'
 import type {
   ApiResponse,
   QuoteRequest,
@@ -13,11 +13,134 @@ import type {
   LPPosition,
   LPEvent,
   VolumeDataPoint,
+  PlaceOrderRequest,
+  Order,
+  OrderStatus,
 } from '../../types'
+
+// Map backend integer status to frontend string
+const ORDER_STATUS_MAP: Record<number, OrderStatus> = {
+  0: 'pending',
+  1: 'partial',
+  2: 'filled',
+  3: 'cancelled',
+}
 
 class TradeService {
   private sideToInt(side: string): number {
     return side.toLowerCase() === 'buy' ? 0 : 1
+  }
+
+  private orderTypeToInt(type: string): number {
+    return type.toLowerCase() === 'market' ? 0 : 1
+  }
+
+  // Place an order on the CLOB orderbook
+  async placeOrder(request: PlaceOrderRequest): Promise<ApiResponse<Record<string, unknown>>> {
+    const backendRequest = {
+      symbol: request.symbol,
+      side: this.sideToInt(request.side),
+      order_type: this.orderTypeToInt(request.order_type),
+      quantity: request.quantity,
+      ...(request.price != null && request.order_type === 'limit' ? { price: request.price } : {}),
+    }
+    const response = await apiClient.post(`${API.orderbook}/order`, backendRequest, {
+      params: { symbol: request.symbol },
+    })
+    return response.data
+  }
+
+  // Cancel an order on the CLOB orderbook
+  async cancelOrder(symbol: string, orderId: string): Promise<ApiResponse<unknown>> {
+    const response = await apiClient.post(`${API.orderbook}/order/cancel`, null, {
+      params: { symbol, order_id: orderId },
+    })
+    return response.data
+  }
+
+  // Get a quote for an orderbook trade
+  async getOrderbookQuote(
+    symbol: string,
+    side: string,
+    quantity: string
+  ): Promise<ApiResponse<Record<string, unknown>>> {
+    const response = await apiClient.get(`${API.orderbook}/quote`, {
+      params: orderbookParams(symbol, { side: this.sideToInt(side), quantity }),
+    })
+    return response.data
+  }
+
+  // Get user's orders for a specific symbol
+  async getUserOrders(
+    symbol: string,
+    status?: OrderStatus[],
+    limit: number = 50
+  ): Promise<ApiResponse<Order[]>> {
+    const statusInts = status?.map(s => {
+      const entry = Object.entries(ORDER_STATUS_MAP).find(([, v]) => v === s)
+      return entry ? Number(entry[0]) : undefined
+    }).filter((v): v is number => v !== undefined)
+
+    const response = await apiClient.get(`${API.orderbook}/orders`, {
+      params: {
+        symbol,
+        ...(statusInts && statusInts.length > 0 ? { status: statusInts } : {}),
+        limit,
+      },
+    })
+    const data = response.data
+    if (data.success && data.data?.orders) {
+      return {
+        success: true,
+        data: this.normalizeOrders(data.data.orders),
+      }
+    }
+    return data
+  }
+
+  // Get all user orders across symbols
+  async getAllUserOrders(
+    status?: OrderStatus[],
+    symbol?: string,
+    limit: number = 50
+  ): Promise<ApiResponse<Order[]>> {
+    const statusInts = status?.map(s => {
+      const entry = Object.entries(ORDER_STATUS_MAP).find(([, v]) => v === s)
+      return entry ? Number(entry[0]) : undefined
+    }).filter((v): v is number => v !== undefined)
+
+    const response = await apiClient.get(`${API.orderbook}/user/orders`, {
+      params: {
+        ...(symbol ? { symbol } : {}),
+        ...(statusInts && statusInts.length > 0 ? { status: statusInts } : {}),
+        limit,
+      },
+    })
+    const data = response.data
+    if (data.success && data.data?.orders) {
+      return {
+        success: true,
+        data: this.normalizeOrders(data.data.orders),
+      }
+    }
+    return data
+  }
+
+  // Normalize backend order records to frontend Order type
+  private normalizeOrders(orders: Array<Record<string, unknown>>): Order[] {
+    return orders.map(o => ({
+      order_id: String(o.order_id),
+      symbol: String(o.symbol),
+      side: (o.side === 0 ? 'buy' : 'sell') as Order['side'],
+      order_type: (o.order_type === 0 ? 'market' : 'limit') as Order['order_type'],
+      price: String(o.price ?? '0'),
+      quantity: String(o.quantity ?? '0'),
+      filled_quantity: String(o.filled_quantity ?? '0'),
+      remaining_quantity: String(o.remaining_quantity ?? '0'),
+      status: ORDER_STATUS_MAP[o.status as number] ?? 'pending',
+      created_at: String(o.created_at ?? ''),
+      updated_at: o.updated_at ? String(o.updated_at) : undefined,
+    }))
   }
 
   // Get trade quote (preview) - AMM only
