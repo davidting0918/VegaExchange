@@ -6,6 +6,7 @@ Implements traditional order book matching with price-time priority.
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -534,6 +535,13 @@ class CLOBEngine(BaseEngine):
                             "quote_amount": float(fill_quote),
                             "fee": float(taker_fee),
                             "matched_order_id": order["order_id"],
+                            # Extra fields for private WS events
+                            "maker_user_id": order["user_id"],
+                            "maker_trade_id": maker_trade_id,
+                            "maker_fee": float(maker_fee),
+                            "maker_side": maker_side.value,
+                            "maker_order_status": new_status.value,
+                            "maker_remaining": float(order_remaining - fill_quantity),
                         }
                     )
 
@@ -577,7 +585,7 @@ class CLOBEngine(BaseEngine):
         avg_price = total_quote_amount / total_filled_quantity if total_filled_quantity > 0 else Decimal("0")
 
         # Fire-and-forget WebSocket broadcast (if manager available)
-        asyncio.create_task(self._broadcast_trade_event(side, fills))
+        asyncio.create_task(self._broadcast_trade_event(user_id, side, fills))
 
         return TradeResult(
             success=True,
@@ -601,30 +609,74 @@ class CLOBEngine(BaseEngine):
             },
         )
 
-    async def _broadcast_trade_event(self, side: OrderSide, fills: List[Dict[str, Any]]):
+    async def _broadcast_trade_event(
+        self, taker_user_id: str, side: OrderSide, fills: List[Dict[str, Any]]
+    ):
         """Broadcast trade events via WebSocket (no-op if manager not available)"""
         try:
             from backend.core.websocket_manager import get_ws_manager
             manager = get_ws_manager()
-            if manager and fills:
-                symbol = self.symbol
-                # Broadcast new trades
-                for fill in fills:
-                    await manager.broadcast(f"trades:{symbol}", {
-                        "type": "trade",
-                        "symbol": symbol,
-                        "price": fill["price"],
-                        "quantity": fill["quantity"],
-                        "side": side.value,
-                    })
-                # Broadcast updated orderbook
-                order_book = await self._get_order_book(20)
-                await manager.broadcast(f"orderbook:{symbol}", {
-                    "type": "orderbook",
+            if not manager or not fills:
+                return
+
+            symbol = self.symbol
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            for fill in fills:
+                # --- Public channel: trades:{symbol} (Issue #20: enriched payload) ---
+                await manager.broadcast(f"trades:{symbol}", {
+                    "type": "trade",
                     "symbol": symbol,
-                    "bids": order_book["bids"],
-                    "asks": order_book["asks"],
+                    "price": fill["price"],
+                    "quantity": fill["quantity"],
+                    "side": side.value,
+                    "trade_id": fill["trade_id"],
+                    "created_at": now_iso,
                 })
+
+                # --- Private channel: taker order_update ---
+                await manager.send_to_user(taker_user_id, {
+                    "type": "order_update",
+                    "order_id": fill["matched_order_id"],
+                    "symbol": symbol,
+                    "side": side.value,
+                    "status": OrderStatus.FILLED.value,
+                    "filled_quantity": fill["quantity"],
+                    "remaining_quantity": 0,
+                    "price": fill["price"],
+                    "fill_price": fill["price"],
+                    "fee_amount": fill["fee"],
+                    "fee_asset": self.quote_asset,
+                    "trade_id": fill["trade_id"],
+                    "is_taker": True,
+                })
+
+                # --- Private channel: maker order_update ---
+                maker_user_id = fill["maker_user_id"]
+                await manager.send_to_user(maker_user_id, {
+                    "type": "order_update",
+                    "order_id": fill["matched_order_id"],
+                    "symbol": symbol,
+                    "side": fill["maker_side"],
+                    "status": fill["maker_order_status"],
+                    "filled_quantity": fill["quantity"],
+                    "remaining_quantity": fill["maker_remaining"],
+                    "price": fill["price"],
+                    "fill_price": fill["price"],
+                    "fee_amount": fill["maker_fee"],
+                    "fee_asset": self.quote_asset,
+                    "trade_id": fill["maker_trade_id"],
+                    "is_taker": False,
+                })
+
+            # --- Public channel: orderbook:{symbol} ---
+            order_book = await self._get_order_book(20)
+            await manager.broadcast(f"orderbook:{symbol}", {
+                "type": "orderbook",
+                "symbol": symbol,
+                "bids": order_book["bids"],
+                "asks": order_book["asks"],
+            })
         except Exception:
             pass  # WebSocket broadcast is best-effort
 
@@ -799,9 +851,46 @@ class CLOBEngine(BaseEngine):
                 OrderStatus.CANCELLED.value,
             )
 
+        # Fire-and-forget: notify user via private WS channel
+        asyncio.create_task(self._broadcast_cancel_event(user_id, order_id, order))
+
         return {
             "success": True,
             "order_id": order_id,
             "unlocked_amount": float(unlock_amount),
             "unlocked_asset": unlock_asset,
         }
+
+    async def _broadcast_cancel_event(
+        self, user_id: str, order_id: str, order: Dict[str, Any]
+    ):
+        """Broadcast cancel event to user's private channel"""
+        try:
+            from backend.core.websocket_manager import get_ws_manager
+            manager = get_ws_manager()
+            if not manager:
+                return
+
+            await manager.send_to_user(user_id, {
+                "type": "order_update",
+                "order_id": order_id,
+                "symbol": self.symbol,
+                "side": order["side"],
+                "status": OrderStatus.CANCELLED.value,
+                "filled_quantity": float(order["filled_quantity"]),
+                "remaining_quantity": 0,
+                "price": float(order["price"]) if order["price"] else None,
+                "fee_amount": 0,
+                "fee_asset": self.quote_asset,
+            })
+
+            # Also update public orderbook
+            order_book = await self._get_order_book(20)
+            await manager.broadcast(f"orderbook:{self.symbol}", {
+                "type": "orderbook",
+                "symbol": self.symbol,
+                "bids": order_book["bids"],
+                "asks": order_book["asks"],
+            })
+        except Exception:
+            pass
