@@ -190,6 +190,10 @@ When writing code, always follow these principles:
 - Use `SELECT ... FOR UPDATE` when reading balances that will be modified
 - Consider race conditions: two users hitting the same order, same pool
 - Use database constraints as the last line of defense
+- **For in-memory CLOB matching**: use one `asyncio.Lock` per `CLOBEngine` instance (per symbol)
+  - Lock scope: hold the lock for the full match → persist → apply cycle
+  - This prevents two concurrent orders for the same symbol from racing in the matching loop
+  - Never call long-running async DB operations while holding the lock beyond the settlement transaction
 
 ### 3. Idempotency
 - API operations that modify state should be idempotent where possible

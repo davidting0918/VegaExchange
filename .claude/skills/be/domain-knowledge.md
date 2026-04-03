@@ -43,7 +43,62 @@ Matching algorithm:
 | **Database-only** | Crash-safe, simple | Higher latency (~5-50ms per match) |
 | **Hybrid** | Best of both | Complex consistency management |
 
-**VegaExchange recommendation**: Database-only is fine for simulation. Optimize later if needed.
+**VegaExchange recommendation**: Use Pure Python In-Memory order book (`sortedcontainers.SortedList`) for matching. PostgreSQL is persistence-only (trades, balances, history). No Redis needed — single process is sufficient for the simulation lab.
+
+### In-Memory Order Book — VegaExchange Implementation Pattern
+
+Use `sortedcontainers.SortedList` inside each `CLOBEngine` instance (one engine per symbol, cached by `EngineRouter`).
+
+```python
+from sortedcontainers import SortedList
+import asyncio
+
+class InMemoryOrderBook:
+    def __init__(self):
+        # Bids: highest price first → negate price as sort key
+        self.bids: SortedList = SortedList(key=lambda o: (-o["price"], o["created_at"]))
+        # Asks: lowest price first
+        self.asks: SortedList = SortedList(key=lambda o: (o["price"], o["created_at"]))
+        self.orders: dict[str, dict] = {}  # order_id → full order dict
+        self._lock: asyncio.Lock = asyncio.Lock()  # per-symbol concurrency guard
+```
+
+**Key design rules:**
+- `_lock` is an `asyncio.Lock()` — one per symbol, held for the full match-settle cycle
+- Matching runs entirely in-memory (no DB queries during the matching loop)
+- After matching: persist trades and balance updates to PostgreSQL in a single atomic transaction
+- Balance locking (pre-order) and settlement (post-match) still use DB transactions
+
+**Cold start reconstruction** — on engine init, rebuild book from DB:
+```python
+async def _reconstruct_book(self):
+    """Rebuild in-memory order book from open/partial orders in DB on startup."""
+    open_orders = await self.db.read(
+        "SELECT * FROM orderbook_orders WHERE symbol_id = $1 AND status IN (0, 1)"
+        " ORDER BY created_at ASC",
+        self.symbol_config["symbol_id"],
+    )
+    for order in open_orders:
+        self._add_to_book(order)
+```
+
+**Concurrency model** — lock scope covers match + persist + apply:
+```python
+async def execute_trade(self, ...):
+    async with self.book._lock:
+        # 1. Match in-memory (pure Python, no DB)
+        fills = self._match_in_memory(incoming_order)
+
+        # 2. Persist fills + settle balances atomically in DB
+        async with self.db.transaction() as conn:
+            await self._persist_fills(conn, fills)
+            await self._settle_balances(conn, fills)
+
+        # 3. Apply fills to in-memory book state
+        self._apply_fills_to_book(fills)
+```
+
+**Never** query the order book from DB during the matching loop — the in-memory book is the authoritative state for live orders.
 
 ---
 
