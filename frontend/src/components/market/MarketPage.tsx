@@ -8,8 +8,21 @@ import { CandlestickChart, OrderbookChart } from '../charts'
 import { marketService, tradeService } from '../../api'
 import { formatCrypto, formatNumber, parseNumericInput, isValidAmount, buildSymbolFromPath } from '../../utils'
 import { useWebSocket } from '../../hooks/useWebSocket'
-import type { TradeSide, OrderType, OrderbookLevel, Order, Symbol as SymbolType, CandlestickData as AppCandlestickData } from '../../types'
+import type { TradeSide, OrderType, OrderbookLevel, Order, Trade, Symbol as SymbolType, CandlestickData as AppCandlestickData, OrderStatus } from '../../types'
 import type { CandlestickData } from 'lightweight-charts'
+
+// Backend sends integer enum values over WebSocket
+const WS_STATUS_MAP: Record<number, OrderStatus> = {
+  0: 'pending',
+  1: 'partial',
+  2: 'filled',
+  3: 'cancelled',
+}
+
+const WS_SIDE_MAP: Record<number, TradeSide> = {
+  0: 'buy',
+  1: 'sell',
+}
 
 export const MarketPage: React.FC = () => {
   const { base, quote, settle, market } = useParams<{
@@ -28,12 +41,10 @@ export const MarketPage: React.FC = () => {
 
   const {
     symbols,
-    recentTrades,
-    isLoading,
     loadSymbols,
   } = useTrading()
 
-  const { balances, loadBalances } = useUser()
+  const { user, balances, loadBalances } = useUser()
 
   // Local state
   const [symbolInfo, setSymbolInfo] = useState<SymbolType | null>(null)
@@ -46,6 +57,13 @@ export const MarketPage: React.FC = () => {
   const [ordersLoading, setOrdersLoading] = useState(false)
   const [ordersTab, setOrdersTab] = useState<'open' | 'history'>('open')
   const [cancellingOrders, setCancellingOrders] = useState<Set<string>>(new Set())
+
+  // Local trades state (owned locally instead of Redux to avoid polluting global state)
+  const [localTrades, setLocalTrades] = useState<Trade[]>([])
+  const [tradesLoading, setTradesLoading] = useState(true)
+
+  // Toast notification state
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null)
 
   // Kline / chart state
   const [klineData, setKlineData] = useState<CandlestickData[]>([])
@@ -87,13 +105,20 @@ export const MarketPage: React.FC = () => {
     }
   }, [decodedSymbol])
 
-  // Load recent trades for CLOB
+  // Load recent trades for CLOB into local state
   const loadTrades = useCallback(async () => {
     if (!decodedSymbol) return
     try {
-      await marketService.getRecentTrades(decodedSymbol, 1, 50) // 1 = CLOB engine type
+      const response = await marketService.getRecentTrades(decodedSymbol, 1, 50)
+      if (response.success && response.data) {
+        const raw = response.data as Trade[] | { trades: Trade[] }
+        const trades = Array.isArray(raw) ? raw : raw.trades
+        setLocalTrades(trades)
+      }
     } catch (err) {
       console.error('Failed to load trades:', err)
+    } finally {
+      setTradesLoading(false)
     }
   }, [decodedSymbol])
 
@@ -161,6 +186,10 @@ export const MarketPage: React.FC = () => {
   const { lastMessage: tradesWs } = useWebSocket(
     decodedSymbol ? `trades:${decodedSymbol}` : null
   )
+  // #21: Subscribe to private user channel for order/balance updates
+  const { lastMessage: userWs } = useWebSocket(
+    user?.user_id ? `user:${user.user_id}` : null
+  )
 
   // Update orderbook from WebSocket
   useEffect(() => {
@@ -173,35 +202,141 @@ export const MarketPage: React.FC = () => {
     }
   }, [orderbookWs])
 
-  // Reload trades on WebSocket trade event
+  // #23: Append trades incrementally from WebSocket payload
   useEffect(() => {
-    if (tradesWs) {
-      loadTrades()
+    if (!tradesWs?.data) return
+    const d = tradesWs.data as {
+      trade_id?: string
+      price?: number
+      quantity?: number
+      side?: number
+      created_at?: string
+      symbol?: string
     }
-  }, [tradesWs, loadTrades])
+    // Graceful fallback: if enriched fields missing, re-fetch full list
+    if (!d.trade_id || !d.created_at) {
+      loadTrades()
+      return
+    }
+    // Only prepend if matching current symbol
+    if (d.symbol && d.symbol !== decodedSymbol) return
 
-  // Polling fallback: orderbook every 2s, orders every 3s, klines every 30s
+    const newTrade: Trade = {
+      trade_id: d.trade_id,
+      symbol: d.symbol || decodedSymbol,
+      side: d.side !== undefined ? (WS_SIDE_MAP[d.side] || 'buy') : 'buy',
+      engine_type: 1, // CLOB
+      price: String(d.price ?? 0),
+      quantity: String(d.quantity ?? 0),
+      quote_amount: String((d.price ?? 0) * (d.quantity ?? 0)),
+      fee_amount: '0',
+      fee_asset: symbolInfo?.quote || 'USDT',
+      status: 1,
+      created_at: d.created_at,
+    }
+    setLocalTrades(prev => [newTrade, ...prev].slice(0, 50))
+  }, [tradesWs, decodedSymbol, loadTrades, symbolInfo])
+
+  // #21: Handle private user events (order_update)
   useEffect(() => {
-    if (wsConnected) return // Skip polling when WS is connected
+    if (!userWs?.data) return
+    const d = userWs.data as {
+      type?: string
+      order_id?: string
+      symbol?: string
+      side?: number
+      status?: number
+      filled_quantity?: number
+      remaining_quantity?: number
+      fill_price?: number
+      fee_amount?: number
+      fee_asset?: string
+      is_taker?: boolean
+    }
+    if (d.type !== 'order_update') return
+    // Only process events for the current symbol
+    if (d.symbol && d.symbol !== decodedSymbol) return
+
+    const mappedStatus = d.status !== undefined ? WS_STATUS_MAP[d.status] : undefined
+    if (!mappedStatus || !d.order_id) return
+
+    if (mappedStatus === 'filled' || mappedStatus === 'cancelled') {
+      // Move order from open to history
+      setOpenOrders(prev => {
+        const order = prev.find(o => o.order_id === d.order_id)
+        if (order) {
+          const updated: Order = {
+            ...order,
+            status: mappedStatus,
+            filled_quantity: String(d.filled_quantity ?? order.filled_quantity),
+            remaining_quantity: '0',
+          }
+          setOrderHistory(hist => [updated, ...hist])
+        }
+        return prev.filter(o => o.order_id !== d.order_id)
+      })
+
+      // Show toast notification
+      if (mappedStatus === 'filled') {
+        const sideLabel = d.side !== undefined ? WS_SIDE_MAP[d.side]?.toUpperCase() : ''
+        setToast({
+          message: `${sideLabel} order filled @ ${d.fill_price ?? ''}`,
+          type: 'success',
+        })
+      }
+
+      // Refresh balances immediately
+      loadBalances()
+    } else if (mappedStatus === 'partial') {
+      // Update fill progress in open orders
+      setOpenOrders(prev =>
+        prev.map(o =>
+          o.order_id === d.order_id
+            ? {
+                ...o,
+                status: 'partial' as OrderStatus,
+                filled_quantity: String(d.filled_quantity ?? o.filled_quantity),
+                remaining_quantity: String(d.remaining_quantity ?? o.remaining_quantity),
+              }
+            : o
+        )
+      )
+      loadBalances()
+    }
+  }, [userWs, decodedSymbol, loadBalances])
+
+  // Polling fallback: orderbook every 2s (only if WS disconnected)
+  useEffect(() => {
+    if (wsConnected) return
     const interval = setInterval(() => {
       if (decodedSymbol) loadOrderbook()
     }, 2000)
     return () => clearInterval(interval)
   }, [decodedSymbol, loadOrderbook, wsConnected])
 
+  // #22: User orders polling — only as fallback when WS disconnected (10s instead of 3s)
   useEffect(() => {
+    if (wsConnected) return // WS handles order updates via user channel
     const interval = setInterval(() => {
       if (decodedSymbol) loadUserOrders()
-    }, 3000)
+    }, 10000)
     return () => clearInterval(interval)
-  }, [decodedSymbol, loadUserOrders])
+  }, [decodedSymbol, loadUserOrders, wsConnected])
 
+  // Klines polling every 30s
   useEffect(() => {
     const interval = setInterval(() => {
       if (decodedSymbol) loadKlines()
     }, 30000)
     return () => clearInterval(interval)
   }, [decodedSymbol, loadKlines])
+
+  // Auto-dismiss toast after 3 seconds
+  useEffect(() => {
+    if (!toast) return
+    const timer = setTimeout(() => setToast(null), 3000)
+    return () => clearTimeout(timer)
+  }, [toast])
 
   // Get user balances
   const baseBalance = useMemo(() => {
@@ -364,7 +499,7 @@ export const MarketPage: React.FC = () => {
     setPrice(orderSide === 'buy' ? bestAsk : bestBid)
   }
 
-  if (isLoading && !symbolInfo) {
+  if (symbols.length === 0 && !symbolInfo) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <LoadingSpinner size="lg" />
@@ -392,6 +527,17 @@ export const MarketPage: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Toast notification */}
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium animate-fade-in ${
+          toast.type === 'success'
+            ? 'bg-accent-green/90 text-white'
+            : 'bg-accent-blue/90 text-white'
+        }`}>
+          {toast.message}
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -647,8 +793,8 @@ export const MarketPage: React.FC = () => {
 
             {/* Recent Trades */}
             <TradeHistory
-              trades={recentTrades}
-              isLoading={isLoading}
+              trades={localTrades}
+              isLoading={tradesLoading}
               baseToken={symbolInfo.base}
               quoteToken={symbolInfo.quote}
               symbolKey={decodedSymbol}
