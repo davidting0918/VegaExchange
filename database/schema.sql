@@ -310,6 +310,102 @@ CREATE INDEX idx_lp_events_created_at ON lp_events(created_at DESC);
 CREATE INDEX idx_lp_events_pool_user ON lp_events(pool_id, user_id);
 
 -- =====================================================
+-- ADMIN WHITELIST TABLE
+-- =====================================================
+-- Gate check: only emails in this table can log in to the admin dashboard.
+-- Managed manually via SQL INSERT for bootstrap, then via admin UI.
+CREATE TABLE IF NOT EXISTS admin_whitelist (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    description TEXT,                -- optional note (e.g., "David - project owner")
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by TEXT                   -- manually inserted, nullable for bootstrap
+);
+
+CREATE INDEX idx_admin_whitelist_email ON admin_whitelist(email);
+
+-- =====================================================
+-- ADMINS TABLE
+-- =====================================================
+-- Independent admin user accounts. No relation to the users table.
+-- Created automatically on first admin login if email is in admin_whitelist.
+CREATE TABLE IF NOT EXISTS admins (
+    id SERIAL PRIMARY KEY,
+    google_id VARCHAR(255) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    photo_url TEXT,
+    role VARCHAR(50) NOT NULL DEFAULT 'admin',   -- future: 'super_admin', 'viewer'
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_login_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_admins_google_id ON admins(google_id);
+CREATE INDEX idx_admins_email ON admins(email);
+
+-- =====================================================
+-- ADMIN ACCESS TOKENS TABLE
+-- =====================================================
+-- JWT token storage for admin sessions. Mirrors access_tokens structure
+-- but references admins(id) instead of users(user_id).
+CREATE TABLE IF NOT EXISTS admin_access_tokens (
+    id SERIAL PRIMARY KEY,
+    admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    access_token TEXT NOT NULL UNIQUE,
+    refresh_token TEXT UNIQUE,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expired_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    refresh_expired_at TIMESTAMP WITH TIME ZONE,
+
+    CONSTRAINT admin_token_positive_expiry CHECK (expired_at > created_at)
+);
+
+CREATE INDEX idx_admin_tokens_admin_id ON admin_access_tokens(admin_id);
+CREATE INDEX idx_admin_tokens_access_token ON admin_access_tokens(access_token);
+CREATE INDEX idx_admin_tokens_refresh_token ON admin_access_tokens(refresh_token) WHERE refresh_token IS NOT NULL;
+CREATE INDEX idx_admin_tokens_expired_at ON admin_access_tokens(expired_at);
+
+-- =====================================================
+-- PLATFORM SETTINGS TABLE
+-- =====================================================
+-- Key-value store for platform-wide configuration.
+CREATE TABLE IF NOT EXISTS platform_settings (
+    key VARCHAR(100) PRIMARY KEY,
+    value JSONB NOT NULL,
+    description TEXT,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Seed default init_funding setting
+INSERT INTO platform_settings (key, value, description) VALUES
+('init_funding', '{"USDT": 1000000, "ORDER": 1000, "AMM": 1000, "VEGA": 10000}',
+ 'Default balances for new user registration')
+ON CONFLICT (key) DO NOTHING;
+
+-- =====================================================
+-- ADMIN AUDIT LOGS TABLE
+-- =====================================================
+-- Append-only log of every admin action.
+-- WHO (admin_id) did WHAT (action) to WHICH (target_type + target_id), WHEN (created_at).
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+    id SERIAL PRIMARY KEY,
+    admin_id INTEGER NOT NULL REFERENCES admins(id),  -- WHO
+    action VARCHAR(100) NOT NULL,                     -- WHAT
+    target_type VARCHAR(50),                          -- WHICH type: 'symbol', 'pool', 'user', 'setting'
+    target_id TEXT,                                   -- WHICH id: the specific resource ID
+    details JSONB,                                    -- CONTEXT: {"old": ..., "new": ...}
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() -- WHEN (append-only, no updated_at)
+);
+
+CREATE INDEX idx_audit_logs_admin_id ON admin_audit_logs(admin_id);
+CREATE INDEX idx_audit_logs_created_at ON admin_audit_logs(created_at);
+CREATE INDEX idx_audit_logs_action ON admin_audit_logs(action);
+
+-- =====================================================
 -- HELPER FUNCTIONS
 -- =====================================================
 
@@ -353,6 +449,18 @@ CREATE TRIGGER update_orderbook_orders_updated_at
 
 CREATE TRIGGER update_lp_positions_updated_at
     BEFORE UPDATE ON lp_positions
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_admins_updated_at
+    BEFORE UPDATE ON admins
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_admin_access_tokens_updated_at
+    BEFORE UPDATE ON admin_access_tokens
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_platform_settings_updated_at
+    BEFORE UPDATE ON platform_settings
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =====================================================
