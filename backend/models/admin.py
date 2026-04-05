@@ -34,6 +34,19 @@ class AddWhitelistRequest(BaseModel):
     description: Optional[str] = Field(None, description="Optional note about this admin")
 
 
+class UpdateUserBalanceRequest(BaseModel):
+    """Request to adjust a user's balance (absolute value)"""
+
+    currency: str = Field(..., description="Currency code (e.g., USDT)")
+    available: Decimal = Field(..., ge=0, description="New available balance value")
+
+
+class UpdateUserStatusRequest(BaseModel):
+    """Request to enable/disable a user account"""
+
+    is_active: bool = Field(..., description="Whether the user account should be active")
+
+
 class CreateSymbolRequest(BaseModel):
     """Request to create a new trading symbol"""
 
