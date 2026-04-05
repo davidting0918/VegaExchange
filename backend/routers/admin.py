@@ -14,7 +14,7 @@ from backend.core.dependencies import get_router
 from backend.engines.engine_router import EngineRouter
 from backend.models.common import APIResponse
 from backend.models.enums import SymbolStatus
-from backend.models.requests import CreatePoolRequest, CreateSymbolRequest
+from backend.models.admin import CreatePoolRequest, CreateSymbolRequest
 from backend.services import admin as admin_service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])

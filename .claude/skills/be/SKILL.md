@@ -140,7 +140,7 @@ When modifying the database schema:
 5. If adding new tables, also add the `updated_at` trigger (following existing pattern in schema.sql)
 6. Update any affected Pydantic models in `backend/models/`
 7. Update any affected engine code or router code
-8. If the DB user lacks CREATE permission, note it in the PR for the user to apply manually
+8. If the DB user lacks permissions (ALTER, DROP, CREATE), provide the migration SQL commands **inline in the conversation** and tell the user to run them manually. **NEVER create `.sql` migration files** — the user doesn't want extra files cluttering the repo.
 
 ---
 
@@ -219,12 +219,30 @@ When writing code, always follow these principles:
 - Don't swallow exceptions silently
 - Log unexpected errors
 
-### 7. Code Organization
-- New engines go in `backend/engines/`
-- New routers go in `backend/routers/` and register in `main.py`
-- New models go in `backend/models/`
-- Shared utilities go in `backend/core/`
-- Follow existing naming conventions
+### 7. Code Organization (Model-Router-Service)
+
+The backend uses a **model/router/service** pattern per domain:
+
+```
+backend/
+├── models/<domain>.py     # Pydantic types (request/response), constants
+├── routers/<domain>.py    # Thin endpoint definitions — NO DB queries, NO business logic
+├── services/<domain>.py   # ALL business logic, DB operations, external API calls
+├── engines/               # Market mechanics (AMM, CLOB) — unchanged
+└── core/                  # Cross-domain infra only (auth deps, JWT, audit_log, DB, etc.)
+```
+
+Domains: `admin`, `auth`, `market`, `orderbook`, `pool`, `user`
+
+**Rules:**
+- Routers call services — never call `get_db()` directly in a router
+- Services call DB and engines — they contain all business logic
+- Models define request/response types per domain
+- Shared models (`APIResponse`, `PaginatedResponse`) in `backend/models/common.py`
+- Shared enums in `backend/models/enums.py`
+- Cross-domain functions (audit_log decorator, JWT, auth deps) stay in `backend/core/`
+- If a function is used by only 1 domain → put in that domain's service
+- If a function is used by 2+ domains → put in `backend/core/`
 
 ### 8. Exchange-Specific Patterns
 Refer to [domain-knowledge.md](domain-knowledge.md) for:
@@ -240,21 +258,31 @@ Refer to [domain-knowledge.md](domain-knowledge.md) for:
 |-----------|------|
 | App entry | `backend/main.py` |
 | Schema | `database/schema.sql` |
-| Engines | `backend/engines/{base,amm,clob}_engine.py` |
-| Engine router | `backend/engines/engine_router.py` |
+| **Models** | `backend/models/{common,enums,admin,auth,market,orderbook,pool,user}.py` |
+| **Routers** | `backend/routers/{admin,auth,market,orderbook,pool,users}.py` |
+| **Services** | `backend/services/{admin,auth,market,orderbook,pool,user}.py` |
+| Engines | `backend/engines/{base,amm,clob}_engine.py`, `engine_router.py` |
+| Auth deps | `backend/core/auth.py` (`get_current_user`, `require_admin`) |
+| JWT | `backend/core/jwt.py` (user + admin tokens, separate secrets) |
+| Audit log | `backend/core/audit_log.py` (`@audit_logged` decorator) |
+| ID generation | `backend/core/id_generator.py` |
 | DB client | `backend/core/postgres_database.py` |
 | DB manager | `backend/core/db_manager.py` |
-| Auth | `backend/core/auth.py`, `backend/core/jwt.py` |
-| Models | `backend/models/{enums,requests,responses}.py` |
-| Routers | `backend/routers/{auth,market,pool,orderbook,users,admin}.py` |
-| ID generation | `backend/core/id_generator.py` |
-| Balance utils | `backend/core/balance_utils.py` |
 | Environment | `backend/core/environment.py` |
 | Backend .env | `backend/.env` |
 
 ## Current Architecture Awareness
 
-### Existing Engine Pattern
+### Model-Router-Service Pattern
+```
+Request → Router (thin: auth + parse + call service)
+              → Service (business logic + DB operations)
+                    → Engine (market mechanics, if applicable)
+                    → DB (via get_db())
+              ← APIResponse
+```
+
+### Engine Pattern
 ```
 BaseEngine (abstract)
 ├── AMMEngine (x*y=k constant product)
@@ -262,7 +290,13 @@ BaseEngine (abstract)
 ```
 EngineRouter dispatches by symbol config, caches instances as `symbol:engine_type`.
 
-### Existing Enum Constants (integer-based)
+### Admin Auth System (independent)
+```
+admins table (admin_id TEXT) ← admin_access_tokens ← admin_audit_logs
+Completely separate from users/access_tokens. Uses ADMIN_JWT_SECRET_KEY.
+```
+
+### Enum Constants (integer-based, in models/enums.py)
 - EngineType: 0=AMM, 1=CLOB
 - OrderSide: 0=BUY, 1=SELL
 - OrderType: 0=MARKET, 1=LIMIT
@@ -270,10 +304,11 @@ EngineRouter dispatches by symbol config, caches instances as `symbol:engine_typ
 - TradeStatus: 0=PENDING, 1=COMPLETED, 2=FAILED
 
 ### ID Generation Strategy
-- user_id: 6-digit random integer
+- user_id: 6-digit random integer (TEXT)
+- admin_id: 6-char alphanumeric a-z0-9 (TEXT)
 - pool_id: 0x + 40 hex chars
 - order_id / trade_id: 13-digit millisecond timestamp
-- symbol_id / lp_positions.id / api_key_id: SERIAL
+- symbol_id: SERIAL
 
 ### Default User Balances
 USDT: 1,000,000 | ORDER: 1,000 | AMM: 1,000 | VEGA: 10,000

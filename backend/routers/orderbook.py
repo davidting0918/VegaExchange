@@ -12,7 +12,7 @@ from backend.core.dependencies import get_router
 from backend.engines.engine_router import EngineRouter
 from backend.models.common import APIResponse
 from backend.models.enums import OrderSide, OrderStatus
-from backend.models.requests import PlaceOrderRequest
+from backend.models.orderbook import PlaceOrderRequest
 from backend.services import orderbook as orderbook_service
 
 router = APIRouter(prefix="/api/orderbook", tags=["clob-orderbook"])
