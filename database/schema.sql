@@ -42,7 +42,6 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE UNIQUE INDEX idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
 CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_source ON users(source) WHERE source IS NOT NULL;
 
 -- =====================================================
 -- ACCESS TOKENS TABLE

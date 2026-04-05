@@ -73,35 +73,11 @@ async def main():
     """)
     await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_source ON users(source) WHERE source IS NOT NULL")
     await conn.execute("DROP TRIGGER IF EXISTS update_users_updated_at ON users")
     await conn.execute("CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()")
     print("2/10 users table created")
 
-    # 3. API keys
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS api_keys (
-            api_key_id SERIAL PRIMARY KEY,
-            api_key TEXT NOT NULL UNIQUE,
-            api_secret TEXT,
-            name VARCHAR(255) NOT NULL,
-            source VARCHAR(50) NOT NULL,
-            is_active BOOLEAN DEFAULT TRUE,
-            rate_limit INTEGER DEFAULT 60,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            created_by TEXT REFERENCES users(user_id) ON DELETE SET NULL,
-            CONSTRAINT positive_rate_limit CHECK (rate_limit > 0)
-        )
-    """)
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_api_key ON api_keys(api_key)")
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_source ON api_keys(source)")
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_is_active ON api_keys(is_active)")
-    await conn.execute("DROP TRIGGER IF EXISTS update_api_keys_updated_at ON api_keys")
-    await conn.execute("CREATE TRIGGER update_api_keys_updated_at BEFORE UPDATE ON api_keys FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()")
-    print("3/10 api_keys table created")
-
-    # 4. Access tokens
+    # 3. Access tokens
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS access_tokens (
             id SERIAL PRIMARY KEY,
