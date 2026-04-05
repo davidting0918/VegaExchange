@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+/* ── Admin Dashboard Dark Theme (Linear-inspired minimal) ── */
+@theme {
+  --color-bg-primary: #09090B;
+  --color-bg-secondary: #111113;
+  --color-bg-tertiary: #18181B;
+  --color-bg-hover: #27272A;
+
+  --color-text-primary: #FAFAFA;
+  --color-text-secondary: #A1A1AA;
+  --color-text-tertiary: #71717A;
+
+  --color-border-default: #27272A;
+  --color-border-hover: #3F3F46;
+
+  --color-accent-blue: #3B82F6;
+  --color-accent-green: #22C55E;
+  --color-accent-red: #EF4444;
+  --color-accent-yellow: #EAB308;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
