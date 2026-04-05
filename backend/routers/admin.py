@@ -145,7 +145,7 @@ async def get_symbol(
     return APIResponse(success=True, data=data)
 
 
-@router.put("/symbols/{symbol_id}", response_model=APIResponse)
+@router.post("/symbols/update/{symbol_id}", response_model=APIResponse)
 @audit_logged(action="update_symbol_config", target_type="symbol")
 async def update_symbol(
     symbol_id: int,
@@ -174,7 +174,7 @@ async def get_settings(current_admin: dict = Depends(require_admin)):
     return APIResponse(success=True, data=data)
 
 
-@router.put("/settings/{key}", response_model=APIResponse)
+@router.post("/settings/update/{key}", response_model=APIResponse)
 @audit_logged(action="update_setting", target_type="setting")
 async def update_setting(
     key: str,
@@ -218,7 +218,7 @@ async def add_whitelist(
     return APIResponse(success=True, data=result)
 
 
-@router.delete("/whitelist/{whitelist_id}", response_model=APIResponse)
+@router.post("/whitelist/remove/{whitelist_id}", response_model=APIResponse)
 @audit_logged(action="remove_whitelist", target_type="whitelist")
 async def remove_whitelist(
     whitelist_id: int,

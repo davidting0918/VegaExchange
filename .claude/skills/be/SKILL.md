@@ -205,6 +205,11 @@ When writing code, always follow these principles:
 - Use Pydantic models for request/response validation
 - Add proper HTTP status codes (400 validation, 401 auth, 404 not found)
 - Add OpenAPI descriptions for new endpoints
+- **Only use `GET` and `POST` methods** — no PUT, PATCH, or DELETE
+  - Read operations: `GET`
+  - All mutations: `POST` with action verb in path
+  - Update: `POST /api/admin/symbols/update/{id}` (not PUT)
+  - Delete: `POST /api/admin/whitelist/remove/{id}` (not DELETE)
 
 ### 5. Database Patterns
 - Use `db.read()` / `db.read_one()` for queries

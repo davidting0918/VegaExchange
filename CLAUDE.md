@@ -68,6 +68,10 @@ python -m backend.scripts.price_lifter_trader   # Price manipulation bot
 
 Domains: `admin`, `auth`, `market`, `orderbook`, `pool`, `user`. Shared models in `backend/models/common.py` (`APIResponse`, `PaginatedResponse`). Shared enums in `backend/models/enums.py`.
 
+**HTTP method rule**: Only use `GET` and `POST`. No `PUT`, `PATCH`, or `DELETE`. Use action verbs in the path instead:
+- Update: `POST /api/admin/symbols/update/{id}` (not `PUT /api/admin/symbols/{id}`)
+- Delete: `POST /api/admin/whitelist/remove/{id}` (not `DELETE /api/admin/whitelist/{id}`)
+
 **Core** (`backend/core/`) — cross-domain infrastructure only:
 - `postgres_database.py` - `PostgresAsyncClient` with asyncpg connection pool
 - `db_manager.py` - Singleton `DatabaseManager`; `get_db()` global accessor
