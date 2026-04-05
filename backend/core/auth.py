@@ -14,7 +14,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer
 
 from backend.core.db_manager import get_db
-from backend.core.jwt import verify_token
+from backend.core.jwt import verify_token, verify_admin_token
 
 # HTTP Bearer token security scheme for JWT tokens
 # Enhanced with OpenAPI metadata for better documentation
@@ -175,27 +175,85 @@ async def get_current_user_id(
     return current_user["user_id"]
 
 
+async def _validate_admin_token_and_get_admin(token: str) -> dict:
+    """
+    Validate admin JWT token against admin_access_tokens and return admin record.
+
+    Completely independent from the exchange user auth system.
+    Never touches users or access_tokens tables.
+    """
+    payload = verify_admin_token(token, token_type="access")
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    admin_id: Optional[str] = payload.get("sub") or payload.get("admin_id")
+    if admin_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    db = get_db()
+
+    token_record = await db.read_one(
+        """
+        SELECT aat.*, a.is_active as admin_active
+        FROM admin_access_tokens aat
+        JOIN admins a ON aat.admin_id = a.admin_id
+        WHERE aat.access_token = $1
+          AND aat.is_active = TRUE
+          AND aat.expired_at > NOW()
+          AND a.is_active = TRUE
+        """,
+        token,
+    )
+
+    if not token_record:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin token not found, revoked, or expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    admin = await db.read_one(
+        "SELECT * FROM admins WHERE admin_id = $1 AND is_active = TRUE",
+        admin_id,
+    )
+
+    if not admin:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin not found or inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return admin
+
+
 async def require_admin(
-    current_user: dict = Depends(get_current_user),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> dict:
     """
     FastAPI dependency to require admin permissions.
-    
-    Validates that the current authenticated user has admin privileges.
-    Must be used after get_current_user dependency.
-    
-    Args:
-        current_user: User dictionary from get_current_user dependency
-        
+
+    Validates admin JWT token from Authorization header against
+    admin_access_tokens and admins tables. Completely independent
+    from the exchange user auth system.
+
     Returns:
-        User dictionary (same as input, for convenience)
-        
-    Raises:
-        HTTPException: If user is not an admin (403 Forbidden)
+        Admin dictionary with admin_id (text), email, name, role
     """
-    if not current_user.get("is_admin", False):
+    if credentials is None:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin permissions required",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    return current_user
+
+    token = credentials.credentials
+    return await _validate_admin_token_and_get_admin(token)

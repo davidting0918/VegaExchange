@@ -17,6 +17,11 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 JWT_REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 
+# Admin JWT Configuration (separate secret for admin auth isolation)
+ADMIN_JWT_SECRET_KEY = os.getenv("ADMIN_JWT_SECRET_KEY", "admin_secret_change_this_in_production")
+ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+ADMIN_JWT_REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("ADMIN_JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
 
 def create_access_token(data: Dict[str, str], expires_delta: Optional[timedelta] = None) -> str:
     """
@@ -112,8 +117,47 @@ def get_token_expiration_time(expires_delta: Optional[timedelta] = None) -> date
 def get_refresh_token_expiration_time() -> datetime:
     """
     Get expiration time for refresh token.
-    
+
     Returns:
         Datetime object representing expiration time
     """
     return datetime.now(timezone.utc) + timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+
+
+# =========================================================================
+# Admin JWT functions (uses separate ADMIN_JWT_SECRET_KEY)
+# =========================================================================
+
+def create_admin_access_token(data: Dict[str, str], expires_delta: Optional[timedelta] = None) -> str:
+    """Create a JWT access token for admin using the admin-specific secret."""
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({
+        "exp": expire,
+        "type": "access",
+        "jti": str(uuid.uuid4()),
+    })
+    return jwt.encode(to_encode, ADMIN_JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def create_admin_refresh_token(data: Dict[str, str]) -> str:
+    """Create a JWT refresh token for admin using the admin-specific secret."""
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=ADMIN_JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({
+        "exp": expire,
+        "type": "refresh",
+        "jti": str(uuid.uuid4()),
+    })
+    return jwt.encode(to_encode, ADMIN_JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def verify_admin_token(token: str, token_type: str = "access") -> Optional[Dict[str, str]]:
+    """Verify and decode an admin JWT token using the admin-specific secret."""
+    try:
+        payload = jwt.decode(token, ADMIN_JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != token_type:
+            return None
+        return payload
+    except JWTError:
+        return None

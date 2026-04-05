@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 async def create_symbol(
     request: CreateSymbolRequest,
     router: EngineRouter = Depends(get_router),
-    current_user: dict = Depends(require_admin),
+    current_admin: dict = Depends(require_admin),
 ):
     """
     Create a new trading symbol (CLOB only).
@@ -97,7 +97,7 @@ async def create_symbol(
 async def create_pool(
     request: CreatePoolRequest,
     router: EngineRouter = Depends(get_router),
-    current_user: dict = Depends(require_admin),
+    current_admin: dict = Depends(require_admin),
 ):
     """
     Create a new AMM pool (auto-creates symbol).
@@ -204,7 +204,7 @@ async def update_symbol_status(
     symbol: str,
     status: SymbolStatus = Query(..., description="Symbol status (ACTIVE or MAINTENANCE)"),
     router: EngineRouter = Depends(get_router),
-    current_user: dict = Depends(require_admin),
+    current_admin: dict = Depends(require_admin),
 ):
     """
     Update symbol trading status.
@@ -239,7 +239,7 @@ async def update_symbol_status(
 async def delete_symbol(
     symbol: str,
     router: EngineRouter = Depends(get_router),
-    current_user: dict = Depends(require_admin),
+    current_admin: dict = Depends(require_admin),
 ):
     """
     Delete a symbol (soft delete by setting status to maintenance).

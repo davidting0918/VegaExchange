@@ -302,7 +302,7 @@ CREATE INDEX idx_admin_whitelist_email ON admin_whitelist(email);
 -- Independent admin user accounts. No relation to the users table.
 -- Created automatically on first admin login if email is in admin_whitelist.
 CREATE TABLE IF NOT EXISTS admins (
-    id SERIAL PRIMARY KEY,
+    admin_id TEXT PRIMARY KEY NOT NULL,           -- 6-char random alphanumeric (a-z0-9)
     google_id VARCHAR(255) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255) NOT NULL,
@@ -324,7 +324,7 @@ CREATE INDEX idx_admins_email ON admins(email);
 -- but references admins(id) instead of users(user_id).
 CREATE TABLE IF NOT EXISTS admin_access_tokens (
     id SERIAL PRIMARY KEY,
-    admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    admin_id TEXT NOT NULL REFERENCES admins(admin_id) ON DELETE CASCADE,
     access_token TEXT NOT NULL UNIQUE,
     refresh_token TEXT UNIQUE,
     is_active BOOLEAN DEFAULT TRUE,
@@ -365,7 +365,7 @@ ON CONFLICT (key) DO NOTHING;
 -- WHO (admin_id) did WHAT (action) to WHICH (target_type + target_id), WHEN (created_at).
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
     id SERIAL PRIMARY KEY,
-    admin_id INTEGER NOT NULL REFERENCES admins(id),  -- WHO
+    admin_id TEXT NOT NULL REFERENCES admins(admin_id),  -- WHO
     action VARCHAR(100) NOT NULL,                     -- WHAT
     target_type VARCHAR(50),                          -- WHICH type: 'symbol', 'pool', 'user', 'setting'
     target_id TEXT,                                   -- WHICH id: the specific resource ID

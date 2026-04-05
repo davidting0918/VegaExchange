@@ -13,15 +13,20 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 
 from backend.core.api_key import get_api_key_info
-from backend.core.auth import get_current_user
+from backend.core.auth import get_current_user, require_admin
 from backend.core.balance_utils import create_initial_balances, get_user_balances as get_user_balances_util
 from backend.core.db_manager import get_db
-from backend.core.id_generator import generate_user_id
+from backend.core.id_generator import generate_user_id, generate_admin_id
 from backend.core.jwt import (
+    ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
+    ADMIN_JWT_REFRESH_TOKEN_EXPIRE_DAYS,
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
     JWT_REFRESH_TOKEN_EXPIRE_DAYS,
     create_access_token,
+    create_admin_access_token,
+    create_admin_refresh_token,
     create_refresh_token,
+    verify_admin_token,
     verify_token,
 )
 from backend.core.password import hash_password, verify_password
@@ -32,6 +37,7 @@ router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+ADMIN_GOOGLE_CLIENT_ID = os.getenv("ADMIN_GOOGLE_CLIENT_ID", "")
 GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 
 
@@ -634,8 +640,277 @@ async def refresh_token(
     
     # Create and store new tokens
     token_data = await _create_and_store_tokens(user_id)
-    
+
     return APIResponse(
         success=True,
         data=token_data,
+    )
+
+
+# =============================================================================
+# Admin Authentication Endpoints (fully independent from exchange user auth)
+# =============================================================================
+
+class AdminGoogleAuthRequest(BaseModel):
+    """Request body for admin Google authentication"""
+    id_token: str
+
+
+async def _verify_admin_google_token(id_token: str) -> dict:
+    """
+    Verify Google ID token for admin login using ADMIN_GOOGLE_CLIENT_ID.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            GOOGLE_TOKEN_INFO_URL,
+            params={"id_token": id_token}
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid Google ID token")
+
+        token_info = response.json()
+
+        if ADMIN_GOOGLE_CLIENT_ID and token_info.get("aud") != ADMIN_GOOGLE_CLIENT_ID:
+            raise HTTPException(
+                status_code=401,
+                detail="Token was not issued for the admin application",
+            )
+
+        if token_info.get("email_verified") != "true":
+            raise HTTPException(status_code=401, detail="Email not verified by Google")
+
+        return {
+            "google_id": token_info.get("sub"),
+            "email": token_info.get("email"),
+            "name": token_info.get("name", token_info.get("email", "").split("@")[0]),
+            "picture": token_info.get("picture"),
+        }
+
+
+async def _ensure_unique_admin_id() -> str:
+    """Generate a unique admin ID (6-char alphanumeric)."""
+    admin_id = generate_admin_id()
+    db = get_db()
+    while await db.read_one("SELECT admin_id FROM admins WHERE admin_id = $1", admin_id):
+        admin_id = generate_admin_id()
+    return admin_id
+
+
+async def _create_and_store_admin_tokens(admin_id: str) -> dict:
+    """
+    Create and store JWT tokens for an admin in admin_access_tokens table.
+    Uses the separate ADMIN_JWT_SECRET_KEY.
+    """
+    db = get_db()
+
+    access_token = create_admin_access_token(data={"sub": admin_id, "admin_id": admin_id})
+    refresh_token = create_admin_refresh_token(data={"sub": admin_id, "admin_id": admin_id})
+
+    await db.execute(
+        """
+        INSERT INTO admin_access_tokens (admin_id, access_token, refresh_token, expired_at, refresh_expired_at)
+        VALUES (
+            $1, $2, $3,
+            NOW() + make_interval(mins => $4),
+            NOW() + make_interval(days => $5)
+        )
+        """,
+        admin_id,
+        access_token,
+        refresh_token,
+        ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
+        ADMIN_JWT_REFRESH_TOKEN_EXPIRE_DAYS,
+    )
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
+
+
+@router.post("/admin/google", response_model=APIResponse)
+async def admin_google_auth(request: AdminGoogleAuthRequest):
+    """
+    Admin Google OAuth authentication endpoint.
+
+    Completely independent from exchange user auth:
+    - Validates Google token against ADMIN_GOOGLE_CLIENT_ID
+    - Checks email against admin_whitelist table
+    - Creates/updates admin record in admins table
+    - Stores JWT tokens in admin_access_tokens table
+    - Never touches users or access_tokens tables
+    """
+    db = get_db()
+
+    # Verify Google ID token with admin client ID
+    google_info = await _verify_admin_google_token(request.id_token)
+    google_id = google_info["google_id"]
+    email = google_info["email"]
+
+    # Check admin whitelist
+    whitelist_entry = await db.read_one(
+        "SELECT id FROM admin_whitelist WHERE email = $1",
+        email,
+    )
+    if not whitelist_entry:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email is not in the admin whitelist",
+        )
+
+    # Check if admin exists
+    admin = await db.read_one(
+        "SELECT * FROM admins WHERE google_id = $1",
+        google_id,
+    )
+
+    is_new_admin = False
+
+    if not admin:
+        # Check by email (edge case: same email, different google_id)
+        admin = await db.read_one(
+            "SELECT * FROM admins WHERE email = $1",
+            email,
+        )
+
+        if admin:
+            # Update google_id on existing admin record
+            await db.execute(
+                "UPDATE admins SET google_id = $1, photo_url = COALESCE(photo_url, $2) WHERE admin_id = $3",
+                google_id,
+                google_info.get("picture"),
+                admin["admin_id"],
+            )
+            admin = await db.read_one("SELECT * FROM admins WHERE admin_id = $1", admin["admin_id"])
+        else:
+            # Create new admin
+            is_new_admin = True
+            admin_id = await _ensure_unique_admin_id()
+
+            admin = await db.execute_returning(
+                """
+                INSERT INTO admins (admin_id, google_id, email, name, photo_url)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING *
+                """,
+                admin_id,
+                google_id,
+                email,
+                google_info.get("name", email.split("@")[0]),
+                google_info.get("picture"),
+            )
+
+    if not admin.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin account is disabled",
+        )
+
+    # Update last login
+    await db.execute(
+        "UPDATE admins SET last_login_at = NOW() WHERE admin_id = $1",
+        admin["admin_id"],
+    )
+
+    # Create and store admin tokens
+    token_data = await _create_and_store_admin_tokens(admin["admin_id"])
+
+    return APIResponse(
+        success=True,
+        data={
+            "admin": {
+                "admin_id": admin["admin_id"],
+                "email": admin["email"],
+                "name": admin["name"],
+                "photo_url": admin.get("photo_url"),
+                "role": admin.get("role", "admin"),
+            },
+            "is_new_admin": is_new_admin,
+            **token_data,
+        },
+    )
+
+
+@router.post("/admin/refresh", response_model=APIResponse)
+async def admin_refresh_token(
+    refresh_token: str = Query(..., description="Admin refresh token"),
+):
+    """
+    Refresh admin access token using admin refresh token.
+
+    Validates against admin_access_tokens table (not access_tokens).
+    Uses ADMIN_JWT_SECRET_KEY for token verification.
+    """
+    db = get_db()
+
+    # Verify refresh token JWT signature
+    payload = verify_admin_token(refresh_token, token_type="refresh")
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired admin refresh token")
+
+    admin_id = payload.get("sub") or payload.get("admin_id")
+    if not admin_id:
+        raise HTTPException(status_code=401, detail="Invalid admin token payload")
+
+    # Validate refresh token in database
+    token_record = await db.read_one(
+        """
+        SELECT aat.*, a.is_active as admin_active
+        FROM admin_access_tokens aat
+        JOIN admins a ON aat.admin_id = a.admin_id
+        WHERE aat.refresh_token = $1
+          AND aat.is_active = TRUE
+          AND aat.refresh_expired_at > NOW()
+          AND a.is_active = TRUE
+        """,
+        refresh_token,
+    )
+
+    if not token_record:
+        raise HTTPException(status_code=401, detail="Admin refresh token not found, revoked, or expired")
+
+    # Revoke old admin tokens
+    await db.execute(
+        """
+        UPDATE admin_access_tokens
+        SET is_active = FALSE
+        WHERE admin_id = $1 AND is_active = TRUE
+        """,
+        admin_id,
+    )
+
+    # Create and store new admin tokens
+    token_data = await _create_and_store_admin_tokens(admin_id)
+
+    return APIResponse(
+        success=True,
+        data=token_data,
+    )
+
+
+@router.post("/admin/logout", response_model=APIResponse)
+async def admin_logout(current_admin: dict = Depends(require_admin)):
+    """
+    Logout admin by revoking all active admin tokens.
+
+    Requires valid admin JWT token in Authorization header.
+    Operates on admin_access_tokens table only.
+    """
+    db = get_db()
+
+    await db.execute(
+        """
+        UPDATE admin_access_tokens
+        SET is_active = FALSE
+        WHERE admin_id = $1 AND is_active = TRUE
+        """,
+        current_admin["admin_id"],
+    )
+
+    return APIResponse(
+        success=True,
+        data={"message": "Admin successfully logged out"},
     )
