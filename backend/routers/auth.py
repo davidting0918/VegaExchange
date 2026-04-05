@@ -1,163 +1,26 @@
 """
 Authentication API Routes
 
-All authentication-related endpoints including registration, login, logout, and token management.
+Thin router — delegates all business logic to services/auth.py.
 """
 
-import os
 from typing import Optional
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
 
 from backend.core.api_key import get_api_key_info
 from backend.core.auth import get_current_user, require_admin
-from backend.core.balance_utils import create_initial_balances, get_user_balances as get_user_balances_util
-from backend.core.db_manager import get_db
-from backend.core.id_generator import generate_user_id, generate_admin_id
-from backend.core.jwt import (
-    ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
-    ADMIN_JWT_REFRESH_TOKEN_EXPIRE_DAYS,
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
-    JWT_REFRESH_TOKEN_EXPIRE_DAYS,
-    create_access_token,
-    create_admin_access_token,
-    create_admin_refresh_token,
-    create_refresh_token,
-    verify_admin_token,
-    verify_token,
+from backend.models.auth import (
+    AdminGoogleAuthRequest,
+    EmailLoginRequest,
+    EmailRegisterRequest,
+    GoogleAuthRequest,
 )
-from backend.core.password import hash_password, verify_password
-from backend.models.requests import EmailRegisterRequest, EmailLoginRequest
-from backend.models.responses import APIResponse
+from backend.models.common import APIResponse
+from backend.services import auth as auth_service
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
-
-# Google OAuth Configuration
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
-ADMIN_GOOGLE_CLIENT_ID = os.getenv("ADMIN_GOOGLE_CLIENT_ID", "")
-GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
-
-
-class GoogleAuthRequest(BaseModel):
-    """Request body for Google authentication"""
-    id_token: str
-
-
-async def _verify_google_token(id_token: str) -> dict:
-    """
-    Verify Google ID token and return user info.
-    
-    Args:
-        id_token: The Google ID token from frontend
-        
-    Returns:
-        Dictionary with user info (sub, email, name, picture, email_verified)
-        
-    Raises:
-        HTTPException if token is invalid
-    """
-    async with httpx.AsyncClient() as client:
-        # Verify token with Google's tokeninfo endpoint
-        response = await client.get(
-            GOOGLE_TOKEN_INFO_URL,
-            params={"id_token": id_token}
-        )
-        
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid Google ID token"
-            )
-        
-        token_info = response.json()
-        
-        # Verify the token is for our app (if GOOGLE_CLIENT_ID is configured)
-        if GOOGLE_CLIENT_ID and token_info.get("aud") != GOOGLE_CLIENT_ID:
-            raise HTTPException(
-                status_code=401,
-                detail="Token was not issued for this application"
-            )
-        
-        # Check if email is verified
-        if token_info.get("email_verified") != "true":
-            raise HTTPException(
-                status_code=401,
-                detail="Email not verified by Google"
-            )
-        
-        return {
-            "google_id": token_info.get("sub"),
-            "email": token_info.get("email"),
-            "name": token_info.get("name", token_info.get("email", "").split("@")[0]),
-            "picture": token_info.get("picture"),
-        }
-
-
-# Helper functions
-async def _ensure_unique_user_id() -> str:
-    """Generate a unique user ID"""
-    user_id = generate_user_id()
-    db = get_db()
-    # Ensure uniqueness (retry if collision)
-    while await db.read_one("SELECT user_id FROM users WHERE user_id = $1", user_id):
-        user_id = generate_user_id()
-    return user_id
-
-
-async def _update_last_login(user_id: str) -> None:
-    """Update user's last login timestamp"""
-    db = get_db()
-    await db.execute(
-        "UPDATE users SET last_login_at = NOW() WHERE user_id = $1",
-        user_id,
-    )
-
-
-async def _create_and_store_tokens(user_id: str, include_refresh: bool = True) -> dict:
-    """
-    Create and store JWT tokens for a user.
-    
-    Returns:
-        Dictionary with access_token, refresh_token, and expiration info
-    """
-    db = get_db()
-    
-    # Generate JWT tokens
-    access_token = create_access_token(data={"sub": user_id, "user_id": user_id})
-    refresh_token = create_refresh_token(data={"sub": user_id, "user_id": user_id})
-    
-    # Store tokens in database using PostgreSQL NOW() + interval to ensure consistency
-    await db.execute(
-        """
-        INSERT INTO access_tokens (user_id, access_token, refresh_token, expired_at, refresh_expired_at)
-        VALUES (
-            $1, 
-            $2, 
-            $3, 
-            NOW() + make_interval(mins => $4),
-            NOW() + make_interval(days => $5)
-        )
-        """,
-        user_id,
-        access_token,
-        refresh_token,
-        JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
-        JWT_REFRESH_TOKEN_EXPIRE_DAYS,
-    )
-    
-    result = {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_in": JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Convert to seconds
-    }
-    
-    if include_refresh:
-        result["refresh_token"] = refresh_token
-    
-    return result
 
 
 # =============================================================================
@@ -168,104 +31,13 @@ async def _create_and_store_tokens(user_id: str, include_refresh: bool = True) -
 async def google_auth(request: GoogleAuthRequest):
     """
     Unified Google OAuth authentication endpoint.
-    
+
     Handles both login and registration:
     - If user exists (by google_id) → Login
     - If user doesn't exist → Create account and Login
-    
-    Frontend should send the Google ID token received from Google Sign-In SDK.
-    
-    Returns:
-        - user: User profile data
-        - balances: User's token balances
-        - access_token: JWT access token
-        - refresh_token: JWT refresh token
-        - is_new_user: Boolean indicating if this was a new registration
     """
-    db = get_db()
-    
-    # Verify Google ID token
-    google_info = await _verify_google_token(request.id_token)
-    google_id = google_info["google_id"]
-    email = google_info["email"]
-    
-    # Check if user exists by google_id
-    user = await db.read_one(
-        "SELECT * FROM users WHERE google_id = $1",
-        google_id,
-    )
-    
-    is_new_user = False
-    
-    if not user:
-        # Check if email is already used by another account
-        existing_email = await db.read_one(
-            "SELECT user_id, google_id FROM users WHERE email = $1",
-            email,
-        )
-        
-        if existing_email:
-            if existing_email.get("google_id"):
-                # Another Google account with this email
-                raise HTTPException(
-                    status_code=400,
-                    detail="Email is already associated with another Google account"
-                )
-            else:
-                # Email account exists - link Google to existing account
-                await db.execute(
-                    """
-                    UPDATE users 
-                    SET google_id = $1, photo_url = COALESCE(photo_url, $2)
-                    WHERE user_id = $3
-                    """,
-                    google_id,
-                    google_info.get("picture"),
-                    existing_email["user_id"],
-                )
-                user = await db.read_one(
-                    "SELECT * FROM users WHERE user_id = $1",
-                    existing_email["user_id"],
-                )
-        else:
-            # Create new user
-            is_new_user = True
-            user_id = await _ensure_unique_user_id()
-            
-            user = await db.execute_returning(
-                """
-                INSERT INTO users (user_id, google_id, email, user_name, photo_url)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING *
-                """,
-                user_id,
-                google_id,
-                email,
-                google_info.get("name", email.split("@")[0]),
-                google_info.get("picture"),
-            )
-            
-            # Create initial balances for new user
-            await create_initial_balances(user["user_id"], account_type="spot")
-    
-    # Update last login
-    await _update_last_login(user["user_id"])
-    
-    # Create and store tokens
-    token_data = await _create_and_store_tokens(user["user_id"])
-    
-    # Get balances
-    balances = await get_user_balances_util(user["user_id"], include_total=True)
-    
-    return APIResponse(
-        success=True,
-        data={
-            "user": user,
-            "balances": balances,
-            "is_new_user": is_new_user,
-            **token_data,
-        },
-    )
+    result = await auth_service.google_auth(request.id_token)
+    return APIResponse(success=True, data=result)
 
 
 # =============================================================================
@@ -280,58 +52,15 @@ async def register_user(
     avatar_url: Optional[str] = Query(None, description="Avatar URL"),
     api_key_info: dict = Depends(get_api_key_info),
 ):
-    """
-    Register a new user via Google OAuth (called after Google OAuth).
-
-    Creates user account with default initial balances.
-    Requires both X-API-Key and X-API-Secret headers.
-    """
-    db = get_db()
-
-    # Check if user already exists
-    existing = await db.read_one(
-        "SELECT user_id FROM users WHERE google_id = $1 OR email = $2",
-        google_id,
-        email,
+    """[DEPRECATED] Register a new user via Google OAuth."""
+    result = await auth_service.register_legacy(
+        google_id=google_id,
+        email=email,
+        display_name=display_name,
+        avatar_url=avatar_url,
+        source=api_key_info.get("source"),
     )
-
-    if existing:
-        raise HTTPException(status_code=400, detail="User already exists")
-
-    # Generate unique user_id
-    user_id = await _ensure_unique_user_id()
-
-    # Get source from API key info
-    source = api_key_info.get("source")
-
-    # Create user with source
-    user = await db.execute_returning(
-        """
-        INSERT INTO users (user_id, google_id, email, user_name, photo_url, source)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *
-        """,
-        user_id,
-        google_id,
-        email,
-        display_name or email.split("@")[0],
-        avatar_url,
-        source,
-    )
-
-    # Create initial balances
-    await create_initial_balances(user["user_id"], account_type="spot")
-
-    # Fetch balances
-    balances = await get_user_balances_util(user["user_id"], include_total=False)
-
-    return APIResponse(
-        success=True,
-        data={
-            "user": user,
-            "balances": balances,
-        },
-    )
+    return APIResponse(success=True, data=result)
 
 
 @router.post("/register/email", response_model=APIResponse)
@@ -339,148 +68,30 @@ async def register_user_email(
     request: EmailRegisterRequest,
     api_key_info: dict = Depends(get_api_key_info),
 ):
-    """
-    Register a new user with email/password.
-
-    Creates user account with default initial balances.
-    Password must be at least 3 characters long.
-    Requires both X-API-Key and X-API-Secret headers.
-    """
-    db = get_db()
-
-    # Check if user already exists
-    existing = await db.read_one(
-        "SELECT user_id FROM users WHERE email = $1",
-        request.email,
+    """Register a new user with email/password."""
+    result = await auth_service.register_email(
+        email=request.email,
+        password=request.password,
+        user_name=request.user_name,
+        source=api_key_info.get("source"),
     )
-
-    if existing:
-        raise HTTPException(status_code=400, detail="User with this email already exists")
-
-    # Generate unique user_id
-    user_id = await _ensure_unique_user_id()
-
-    # Hash password
-    hashed_pw = hash_password(request.password)
-
-    # Get source from API key info
-    source = api_key_info.get("source")
-
-    # Create user with source
-    user = await db.execute_returning(
-        """
-        INSERT INTO users (user_id, email, user_name, hashed_pw, source)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING *
-        """,
-        user_id,
-        request.email,
-        request.user_name or request.email.split("@")[0],
-        hashed_pw,
-        source,
-    )
-
-    # Create initial balances
-    await create_initial_balances(user["user_id"], account_type="spot")
-
-    # Fetch balances
-    balances = await get_user_balances_util(user["user_id"], include_total=False)
-
-    return APIResponse(
-        success=True,
-        data={
-            "user": user,
-            "balances": balances,
-        },
-    )
+    return APIResponse(success=True, data=result)
 
 
 @router.post("/login", response_model=APIResponse, deprecated=True)
 async def login_user(
     google_id: str = Query(..., description="Google OAuth ID"),
 ):
-    """
-    [DEPRECATED] Use /api/auth/google instead.
-    
-    Login user via Google OAuth (called after Google OAuth verification).
-
-    Returns user data, balances, and JWT tokens.
-    """
-    db = get_db()
-
-    user = await db.read_one(
-        "SELECT * FROM users WHERE google_id = $1",
-        google_id,
-    )
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found. Please register first.")
-
-    # Update last login
-    await _update_last_login(user["user_id"])
-
-    # Create and store tokens
-    token_data = await _create_and_store_tokens(user["user_id"])
-
-    # Get balances
-    balances = await get_user_balances_util(user["user_id"], include_total=True)
-
-    return APIResponse(
-        success=True,
-        data={
-            "user": user,
-            "balances": balances,
-            **token_data,
-        },
-    )
+    """[DEPRECATED] Use /api/auth/google instead."""
+    result = await auth_service.login_legacy(google_id)
+    return APIResponse(success=True, data=result)
 
 
 @router.post("/login/email", response_model=APIResponse)
 async def login_user_email(request: EmailLoginRequest):
-    """
-    Login user with email/password.
-
-    Returns user data, balances, and JWT tokens if credentials are valid.
-    """
-    db = get_db()
-
-    # Find user by email
-    user = await db.read_one(
-        "SELECT * FROM users WHERE email = $1",
-        request.email,
-    )
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Check if user has password (email/password user)
-    if not user.get("hashed_pw"):
-        raise HTTPException(
-            status_code=400,
-            detail="This account was created with Google OAuth. Please use Google login instead."
-        )
-
-    # Verify password
-    if not verify_password(request.password, user["hashed_pw"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    # Update last login
-    await _update_last_login(user["user_id"])
-
-    # Create and store tokens
-    token_data = await _create_and_store_tokens(user["user_id"])
-
-    # Get balances
-    balances = await get_user_balances_util(user["user_id"], include_total=True)
-
-    return APIResponse(
-        success=True,
-        data={
-            "user": user,
-            "balances": balances,
-            **token_data,
-        },
-    )
+    """Login user with email/password."""
+    result = await auth_service.login_email(request.email, request.password)
+    return APIResponse(success=True, data=result)
 
 
 @router.post("/token", response_model=dict)
@@ -489,428 +100,57 @@ async def login_for_access_token(
 ):
     """
     OAuth2 password grant token endpoint.
-    
-    This endpoint follows the OAuth2 password grant flow specification.
-    Used by Swagger UI and other OAuth2-compliant clients for authentication.
-    
-    Accepts:
-    - username: User's email address
-    - password: User's password
-    - grant_type: Must be "password" (handled automatically by OAuth2PasswordRequestForm)
-    
-    Returns:
-    - access_token: JWT access token
-    - token_type: Always "bearer"
-    - expires_in: Token expiration time in seconds
+
+    Used by Swagger UI and other OAuth2-compliant clients.
     """
-    db = get_db()
-    
-    # OAuth2PasswordRequestForm uses 'username' field, but we use email
-    email = form_data.username
-    
-    # Find user by email
-    user = await db.read_one(
-        "SELECT * FROM users WHERE email = $1",
-        email,
+    return await auth_service.login_oauth2_password(
+        email=form_data.username,
+        password=form_data.password,
     )
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Check if user has password (email/password user)
-    if not user.get("hashed_pw"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This account was created with Google OAuth. Please use Google login instead.",
-        )
-    
-    # Verify password
-    if not verify_password(form_data.password, user["hashed_pw"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Update last login
-    await _update_last_login(user["user_id"])
-    
-    # Create and store tokens (OAuth2 standard doesn't include refresh_token in response)
-    token_data = await _create_and_store_tokens(user["user_id"], include_refresh=False)
-    
-    return token_data
 
 
 @router.post("/logout", response_model=APIResponse)
 async def logout_user(current_user: dict = Depends(get_current_user)):
-    """
-    Logout current user by revoking their access token.
-    
-    Requires valid JWT token in Authorization header.
-    """
-    db = get_db()
-    user_id = current_user["user_id"]
-    
-    # Revoke all active tokens for this user
-    await db.execute(
-        """
-        UPDATE access_tokens
-        SET is_active = FALSE
-        WHERE user_id = $1 AND is_active = TRUE
-        """,
-        user_id,
-    )
-    
-    return APIResponse(
-        success=True,
-        data={"message": "Successfully logged out"},
-    )
+    """Logout current user by revoking their access token."""
+    await auth_service.logout_user(current_user["user_id"])
+    return APIResponse(success=True, data={"message": "Successfully logged out"})
 
 
 @router.post("/refresh", response_model=APIResponse)
 async def refresh_token(
     refresh_token: str = Query(..., description="Refresh token"),
 ):
-    """
-    Refresh access token using refresh token.
-    
-    Returns new access token and refresh token.
-    """
-    db = get_db()
-    
-    # Verify refresh token JWT signature and expiration
-    payload = verify_token(refresh_token, token_type="refresh")
-    if payload is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired JWT token")
-    
-    user_id = payload.get("sub") or payload.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload - missing user_id")
-    
-    # First, check if token exists in database (without all conditions)
-    token_exists = await db.read_one(
-        """
-        SELECT at.is_active, at.refresh_expired_at, u.is_active as user_active
-        FROM access_tokens at
-        JOIN users u ON at.user_id = u.user_id
-        WHERE at.refresh_token = $1
-        """,
-        refresh_token,
-    )
-    
-    if not token_exists:
-        raise HTTPException(status_code=401, detail="Refresh token not found in database")
-    
-    if not token_exists.get("is_active"):
-        raise HTTPException(status_code=401, detail="Refresh token has been revoked")
-    
-    if not token_exists.get("user_active"):
-        raise HTTPException(status_code=401, detail="User account is inactive")
-    
-    # Check if database expiration has passed
-    token_record = await db.read_one(
-        """
-        SELECT at.*, u.is_active
-        FROM access_tokens at
-        JOIN users u ON at.user_id = u.user_id
-        WHERE at.refresh_token = $1 
-          AND at.is_active = TRUE 
-          AND at.refresh_expired_at > NOW()
-          AND u.is_active = TRUE
-        """,
-        refresh_token,
-    )
-    
-    if not token_record:
-        raise HTTPException(status_code=401, detail="Refresh token expired in database")
-    
-    # Revoke old tokens
-    await db.execute(
-        """
-        UPDATE access_tokens
-        SET is_active = FALSE
-        WHERE user_id = $1 AND is_active = TRUE
-        """,
-        user_id,
-    )
-    
-    # Create and store new tokens
-    token_data = await _create_and_store_tokens(user_id)
-
-    return APIResponse(
-        success=True,
-        data=token_data,
-    )
+    """Refresh access token using refresh token."""
+    result = await auth_service.refresh_user_token(refresh_token)
+    return APIResponse(success=True, data=result)
 
 
 # =============================================================================
-# Admin Authentication Endpoints (fully independent from exchange user auth)
+# Admin Authentication Endpoints
 # =============================================================================
-
-class AdminGoogleAuthRequest(BaseModel):
-    """Request body for admin Google authentication"""
-    id_token: str
-
-
-async def _verify_admin_google_token(id_token: str) -> dict:
-    """
-    Verify Google ID token for admin login using ADMIN_GOOGLE_CLIENT_ID.
-    """
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            GOOGLE_TOKEN_INFO_URL,
-            params={"id_token": id_token}
-        )
-
-        if response.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid Google ID token")
-
-        token_info = response.json()
-
-        if ADMIN_GOOGLE_CLIENT_ID and token_info.get("aud") != ADMIN_GOOGLE_CLIENT_ID:
-            raise HTTPException(
-                status_code=401,
-                detail="Token was not issued for the admin application",
-            )
-
-        if token_info.get("email_verified") != "true":
-            raise HTTPException(status_code=401, detail="Email not verified by Google")
-
-        return {
-            "google_id": token_info.get("sub"),
-            "email": token_info.get("email"),
-            "name": token_info.get("name", token_info.get("email", "").split("@")[0]),
-            "picture": token_info.get("picture"),
-        }
-
-
-async def _ensure_unique_admin_id() -> str:
-    """Generate a unique admin ID (6-char alphanumeric)."""
-    admin_id = generate_admin_id()
-    db = get_db()
-    while await db.read_one("SELECT admin_id FROM admins WHERE admin_id = $1", admin_id):
-        admin_id = generate_admin_id()
-    return admin_id
-
-
-async def _create_and_store_admin_tokens(admin_id: str) -> dict:
-    """
-    Create and store JWT tokens for an admin in admin_access_tokens table.
-    Uses the separate ADMIN_JWT_SECRET_KEY.
-    """
-    db = get_db()
-
-    access_token = create_admin_access_token(data={"sub": admin_id, "admin_id": admin_id})
-    refresh_token = create_admin_refresh_token(data={"sub": admin_id, "admin_id": admin_id})
-
-    await db.execute(
-        """
-        INSERT INTO admin_access_tokens (admin_id, access_token, refresh_token, expired_at, refresh_expired_at)
-        VALUES (
-            $1, $2, $3,
-            NOW() + make_interval(mins => $4),
-            NOW() + make_interval(days => $5)
-        )
-        """,
-        admin_id,
-        access_token,
-        refresh_token,
-        ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
-        ADMIN_JWT_REFRESH_TOKEN_EXPIRE_DAYS,
-    )
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "expires_in": ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    }
-
 
 @router.post("/admin/google", response_model=APIResponse)
 async def admin_google_auth(request: AdminGoogleAuthRequest):
     """
     Admin Google OAuth authentication endpoint.
 
-    Completely independent from exchange user auth:
-    - Validates Google token against ADMIN_GOOGLE_CLIENT_ID
-    - Checks email against admin_whitelist table
-    - Creates/updates admin record in admins table
-    - Stores JWT tokens in admin_access_tokens table
-    - Never touches users or access_tokens tables
+    Validates against admin whitelist. Completely independent from exchange user auth.
     """
-    db = get_db()
-
-    # Verify Google ID token with admin client ID
-    google_info = await _verify_admin_google_token(request.id_token)
-    google_id = google_info["google_id"]
-    email = google_info["email"]
-
-    # Check admin whitelist
-    whitelist_entry = await db.read_one(
-        "SELECT id FROM admin_whitelist WHERE email = $1",
-        email,
-    )
-    if not whitelist_entry:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email is not in the admin whitelist",
-        )
-
-    # Check if admin exists
-    admin = await db.read_one(
-        "SELECT * FROM admins WHERE google_id = $1",
-        google_id,
-    )
-
-    is_new_admin = False
-
-    if not admin:
-        # Check by email (edge case: same email, different google_id)
-        admin = await db.read_one(
-            "SELECT * FROM admins WHERE email = $1",
-            email,
-        )
-
-        if admin:
-            # Update google_id on existing admin record
-            await db.execute(
-                "UPDATE admins SET google_id = $1, photo_url = COALESCE(photo_url, $2) WHERE admin_id = $3",
-                google_id,
-                google_info.get("picture"),
-                admin["admin_id"],
-            )
-            admin = await db.read_one("SELECT * FROM admins WHERE admin_id = $1", admin["admin_id"])
-        else:
-            # Create new admin
-            is_new_admin = True
-            admin_id = await _ensure_unique_admin_id()
-
-            admin = await db.execute_returning(
-                """
-                INSERT INTO admins (admin_id, google_id, email, name, photo_url)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING *
-                """,
-                admin_id,
-                google_id,
-                email,
-                google_info.get("name", email.split("@")[0]),
-                google_info.get("picture"),
-            )
-
-    if not admin.get("is_active", True):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin account is disabled",
-        )
-
-    # Update last login
-    await db.execute(
-        "UPDATE admins SET last_login_at = NOW() WHERE admin_id = $1",
-        admin["admin_id"],
-    )
-
-    # Create and store admin tokens
-    token_data = await _create_and_store_admin_tokens(admin["admin_id"])
-
-    return APIResponse(
-        success=True,
-        data={
-            "admin": {
-                "admin_id": admin["admin_id"],
-                "email": admin["email"],
-                "name": admin["name"],
-                "photo_url": admin.get("photo_url"),
-                "role": admin.get("role", "admin"),
-            },
-            "is_new_admin": is_new_admin,
-            **token_data,
-        },
-    )
+    result = await auth_service.admin_google_auth(request.id_token)
+    return APIResponse(success=True, data=result)
 
 
 @router.post("/admin/refresh", response_model=APIResponse)
 async def admin_refresh_token(
     refresh_token: str = Query(..., description="Admin refresh token"),
 ):
-    """
-    Refresh admin access token using admin refresh token.
-
-    Validates against admin_access_tokens table (not access_tokens).
-    Uses ADMIN_JWT_SECRET_KEY for token verification.
-    """
-    db = get_db()
-
-    # Verify refresh token JWT signature
-    payload = verify_admin_token(refresh_token, token_type="refresh")
-    if payload is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired admin refresh token")
-
-    admin_id = payload.get("sub") or payload.get("admin_id")
-    if not admin_id:
-        raise HTTPException(status_code=401, detail="Invalid admin token payload")
-
-    # Validate refresh token in database
-    token_record = await db.read_one(
-        """
-        SELECT aat.*, a.is_active as admin_active
-        FROM admin_access_tokens aat
-        JOIN admins a ON aat.admin_id = a.admin_id
-        WHERE aat.refresh_token = $1
-          AND aat.is_active = TRUE
-          AND aat.refresh_expired_at > NOW()
-          AND a.is_active = TRUE
-        """,
-        refresh_token,
-    )
-
-    if not token_record:
-        raise HTTPException(status_code=401, detail="Admin refresh token not found, revoked, or expired")
-
-    # Revoke old admin tokens
-    await db.execute(
-        """
-        UPDATE admin_access_tokens
-        SET is_active = FALSE
-        WHERE admin_id = $1 AND is_active = TRUE
-        """,
-        admin_id,
-    )
-
-    # Create and store new admin tokens
-    token_data = await _create_and_store_admin_tokens(admin_id)
-
-    return APIResponse(
-        success=True,
-        data=token_data,
-    )
+    """Refresh admin access token using admin refresh token."""
+    result = await auth_service.refresh_admin_token(refresh_token)
+    return APIResponse(success=True, data=result)
 
 
 @router.post("/admin/logout", response_model=APIResponse)
 async def admin_logout(current_admin: dict = Depends(require_admin)):
-    """
-    Logout admin by revoking all active admin tokens.
-
-    Requires valid admin JWT token in Authorization header.
-    Operates on admin_access_tokens table only.
-    """
-    db = get_db()
-
-    await db.execute(
-        """
-        UPDATE admin_access_tokens
-        SET is_active = FALSE
-        WHERE admin_id = $1 AND is_active = TRUE
-        """,
-        current_admin["admin_id"],
-    )
-
-    return APIResponse(
-        success=True,
-        data={"message": "Admin successfully logged out"},
-    )
+    """Logout admin by revoking all active admin tokens."""
+    await auth_service.logout_admin(current_admin["admin_id"])
+    return APIResponse(success=True, data={"message": "Admin successfully logged out"})

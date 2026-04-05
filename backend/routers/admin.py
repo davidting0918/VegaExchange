@@ -19,7 +19,7 @@ from backend.core.id_generator import generate_pool_id
 from backend.engines.engine_router import EngineRouter
 from backend.models.enums import EngineType, SymbolStatus
 from backend.models.requests import CreatePoolRequest, CreateSymbolRequest
-from backend.models.responses import APIResponse
+from backend.models.common import APIResponse
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
