@@ -1,4 +1,11 @@
-"""Apply database/schema.sql to the staging database via asyncpg."""
+"""Apply database/schema.sql to a target database via asyncpg.
+
+Usage:
+    python -m backend.scripts.apply_schema              # default: staging
+    python -m backend.scripts.apply_schema test          # apply to VegaTest
+    python -m backend.scripts.apply_schema staging       # apply to VegaStaging
+    python -m backend.scripts.apply_schema prod          # apply to Vega (prod)
+"""
 
 import asyncio
 import os
@@ -9,16 +16,28 @@ from dotenv import load_dotenv
 
 load_dotenv("backend/.env")
 
-CONN_STRING = os.getenv("POSTGRES_STAGING")
+ENV_MAP = {
+    "test": "POSTGRES_TEST",
+    "staging": "POSTGRES_STAGING",
+    "prod": "POSTGRES_PROD",
+}
+
+target = sys.argv[1] if len(sys.argv) > 1 else "staging"
+env_key = ENV_MAP.get(target)
+if not env_key:
+    print(f"ERROR: Unknown target '{target}'. Valid: {', '.join(ENV_MAP.keys())}")
+    sys.exit(1)
+
+CONN_STRING = os.getenv(env_key)
 
 
 async def main():
     if not CONN_STRING:
-        print("ERROR: POSTGRES_STAGING not set in backend/.env")
+        print(f"ERROR: {env_key} not set in backend/.env")
         sys.exit(1)
 
     conn = await asyncpg.connect(CONN_STRING)
-    print(f"Connected to staging database")
+    print(f"Connected to {target} database")
 
     # 1. Helper function (triggers depend on it)
     await conn.execute("""
@@ -291,9 +310,102 @@ async def main():
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_lp_events_user_id ON lp_events(user_id)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_lp_events_created_at ON lp_events(created_at DESC)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_lp_events_pool_user ON lp_events(pool_id, user_id)")
-    print("10/10 lp_positions + lp_events tables created")
+    print("10/15 lp_positions + lp_events tables created")
 
-    # 11. Views
+    # 11. Admin whitelist
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS admin_whitelist (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            description TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            created_by TEXT
+        )
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_whitelist_email ON admin_whitelist(email)")
+    print("11/15 admin_whitelist table created")
+
+    # 12. Admins
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            id SERIAL PRIMARY KEY,
+            google_id VARCHAR(255) UNIQUE NOT NULL,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            photo_url TEXT,
+            role VARCHAR(50) NOT NULL DEFAULT 'admin',
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            last_login_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_admins_google_id ON admins(google_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_admins_email ON admins(email)")
+    await conn.execute("DROP TRIGGER IF EXISTS update_admins_updated_at ON admins")
+    await conn.execute("CREATE TRIGGER update_admins_updated_at BEFORE UPDATE ON admins FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()")
+    print("12/15 admins table created")
+
+    # 13. Admin access tokens
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS admin_access_tokens (
+            id SERIAL PRIMARY KEY,
+            admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+            access_token TEXT NOT NULL UNIQUE,
+            refresh_token TEXT UNIQUE,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            expired_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            refresh_expired_at TIMESTAMP WITH TIME ZONE,
+            CONSTRAINT admin_token_positive_expiry CHECK (expired_at > created_at)
+        )
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_tokens_admin_id ON admin_access_tokens(admin_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_tokens_access_token ON admin_access_tokens(access_token)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_tokens_refresh_token ON admin_access_tokens(refresh_token) WHERE refresh_token IS NOT NULL")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_tokens_expired_at ON admin_access_tokens(expired_at)")
+    await conn.execute("DROP TRIGGER IF EXISTS update_admin_access_tokens_updated_at ON admin_access_tokens")
+    await conn.execute("CREATE TRIGGER update_admin_access_tokens_updated_at BEFORE UPDATE ON admin_access_tokens FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()")
+    print("13/15 admin_access_tokens table created")
+
+    # 14. Platform settings
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS platform_settings (
+            key VARCHAR(100) PRIMARY KEY,
+            value JSONB NOT NULL,
+            description TEXT,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+    """)
+    await conn.execute("DROP TRIGGER IF EXISTS update_platform_settings_updated_at ON platform_settings")
+    await conn.execute("CREATE TRIGGER update_platform_settings_updated_at BEFORE UPDATE ON platform_settings FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()")
+    await conn.execute("""
+        INSERT INTO platform_settings (key, value, description) VALUES
+        ('init_funding', '{"USDT": 1000000, "ORDER": 1000, "AMM": 1000, "VEGA": 10000}',
+         'Default balances for new user registration')
+        ON CONFLICT (key) DO NOTHING
+    """)
+    print("14/15 platform_settings table created + seeded")
+
+    # 15. Admin audit logs
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS admin_audit_logs (
+            id SERIAL PRIMARY KEY,
+            admin_id INTEGER NOT NULL REFERENCES admins(id),
+            action VARCHAR(100) NOT NULL,
+            target_type VARCHAR(50),
+            target_id TEXT,
+            details JSONB,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_admin_id ON admin_audit_logs(admin_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON admin_audit_logs(created_at)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON admin_audit_logs(action)")
+    print("15/15 admin_audit_logs table created")
+
+    # 16. Views
     await conn.execute("""
         CREATE OR REPLACE VIEW amm_prices AS
         SELECT
