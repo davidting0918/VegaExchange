@@ -20,6 +20,8 @@ from backend.models.admin import (
     CreateSymbolRequest,
     UpdateSettingRequest,
     UpdateSymbolRequest,
+    UpdateUserBalanceRequest,
+    UpdateUserStatusRequest,
 )
 from backend.services import admin as admin_service
 
@@ -232,3 +234,132 @@ async def remove_whitelist(
         details={"email": result["email"]},
     )
     return APIResponse(success=True, data=result)
+
+
+# =============================================================================
+# Pool Management (#32)
+# =============================================================================
+
+@router.get("/pools", response_model=APIResponse)
+async def get_admin_pools(current_admin: dict = Depends(require_admin)):
+    """Get all AMM pools with enriched data (TVL, price, volume)."""
+    data = await admin_service.get_admin_pools()
+    return APIResponse(success=True, data=data)
+
+
+@router.get("/pools/{pool_id}", response_model=APIResponse)
+async def get_admin_pool(
+    pool_id: str,
+    current_admin: dict = Depends(require_admin),
+):
+    """Get detailed pool info + LP positions + recent swaps."""
+    data = await admin_service.get_admin_pool(pool_id)
+    return APIResponse(success=True, data=data)
+
+
+# =============================================================================
+# User Management (#33)
+# =============================================================================
+
+@router.get("/users", response_model=APIResponse)
+async def get_admin_users(
+    search: Optional[str] = Query(None, description="Search by email or username"),
+    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    limit: int = Query(20, ge=1, le=100, description="Page size"),
+    offset: int = Query(0, ge=0, description="Offset"),
+    sort_by: str = Query("created_at", description="Sort field"),
+    sort_order: str = Query("desc", description="Sort order: asc or desc"),
+    current_admin: dict = Depends(require_admin),
+):
+    """Get paginated user list with summary info."""
+    data = await admin_service.get_admin_users(
+        search=search, is_active=is_active,
+        limit=limit, offset=offset,
+        sort_by=sort_by, sort_order=sort_order,
+    )
+    return APIResponse(success=True, data=data)
+
+
+@router.get("/users/{user_id}", response_model=APIResponse)
+async def get_admin_user(
+    user_id: str,
+    current_admin: dict = Depends(require_admin),
+):
+    """Get full user profile + balances + recent trades."""
+    data = await admin_service.get_admin_user(user_id)
+    return APIResponse(success=True, data=data)
+
+
+@router.post("/users/{user_id}/balance/update", response_model=APIResponse)
+@audit_logged(action="update_user_balance", target_type="user")
+async def update_user_balance(
+    user_id: str,
+    request: UpdateUserBalanceRequest,
+    current_admin: dict = Depends(require_admin),
+    audit: AuditContext = Depends(get_audit_context),
+):
+    """Adjust a user's balance (absolute value)."""
+    result = await admin_service.update_user_balance(user_id, request.currency, request.available)
+    audit.set(
+        target_id=user_id,
+        details={
+            "currency": result["currency"],
+            "old": float(result["old_available"]),
+            "new": float(result["new_available"]),
+        },
+    )
+    return APIResponse(success=True, data=result)
+
+
+@router.post("/users/{user_id}/status/update", response_model=APIResponse)
+@audit_logged(action="update_user_status", target_type="user")
+async def update_user_status(
+    user_id: str,
+    request: UpdateUserStatusRequest,
+    current_admin: dict = Depends(require_admin),
+    audit: AuditContext = Depends(get_audit_context),
+):
+    """Enable/disable a user account. Revokes tokens when disabling."""
+    result = await admin_service.update_user_status(user_id, request.is_active)
+    audit.set(
+        target_id=user_id,
+        details={"is_active": request.is_active, "tokens_revoked": result["tokens_revoked"]},
+    )
+    return APIResponse(success=True, data=result)
+
+
+@router.post("/users/{user_id}/reset-balances", response_model=APIResponse)
+@audit_logged(action="reset_user_balances", target_type="user")
+async def reset_user_balances(
+    user_id: str,
+    current_admin: dict = Depends(require_admin),
+    audit: AuditContext = Depends(get_audit_context),
+):
+    """Reset user balances to platform defaults."""
+    result = await admin_service.reset_user_balances(user_id)
+    audit.set(
+        target_id=user_id,
+        details={"reset_to": result["reset_to"]},
+    )
+    return APIResponse(success=True, data=result)
+
+
+# =============================================================================
+# Dashboard Stats (#30)
+# =============================================================================
+
+@router.get("/dashboard/stats", response_model=APIResponse)
+async def get_dashboard_stats(current_admin: dict = Depends(require_admin)):
+    """Get aggregated platform statistics."""
+    data = await admin_service.get_dashboard_stats()
+    return APIResponse(success=True, data=data)
+
+
+@router.get("/dashboard/recent-activity", response_model=APIResponse)
+async def get_recent_activity(
+    period: str = Query("7d", description="Period: 7d or 30d"),
+    current_admin: dict = Depends(require_admin),
+):
+    """Get daily trade volume and new user counts for charts."""
+    data = await admin_service.get_recent_activity(period)
+    return APIResponse(success=True, data=data)
