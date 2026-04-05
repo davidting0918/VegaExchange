@@ -9,6 +9,20 @@ import secrets
 import time
 
 
+def generate_admin_id() -> str:
+    """
+    Generate a 6-character random alphanumeric admin ID.
+
+    Uses lowercase letters and digits (a-z0-9) to distinguish
+    from user_id which uses digits only.
+
+    Returns:
+        6-char alphanumeric string (e.g., "a3x9k2")
+    """
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+    return "".join(secrets.choice(alphabet) for _ in range(6))
+
+
 def generate_user_id() -> str:
     """
     Generate a 6-digit random integer user ID.
