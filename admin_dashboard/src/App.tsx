@@ -9,6 +9,7 @@ import { SymbolsPage } from '@/pages/SymbolsPage'
 import { PoolsPage } from '@/pages/PoolsPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { WhitelistPage } from '@/pages/WhitelistPage'
 import { AuditLogPage } from '@/pages/AuditLogPage'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_ADMIN_GOOGLE_CLIENT_ID || ''
@@ -35,6 +36,7 @@ export default function App() {
               <Route path="/pools" element={<PoolsPage />} />
               <Route path="/users" element={<UsersPage />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/whitelist" element={<WhitelistPage />} />
               <Route path="/audit-log" element={<AuditLogPage />} />
             </Route>
 
