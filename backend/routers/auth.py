@@ -9,7 +9,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.security import OAuth2PasswordRequestForm
 
-from backend.core.api_key import get_api_key_info
 from backend.core.auth import get_current_user, require_admin
 from backend.models.auth import (
     AdminGoogleAuthRequest,
@@ -50,7 +49,6 @@ async def register_user(
     email: str = Query(..., description="User email"),
     display_name: Optional[str] = Query(None, description="Display name"),
     avatar_url: Optional[str] = Query(None, description="Avatar URL"),
-    api_key_info: dict = Depends(get_api_key_info),
 ):
     """[DEPRECATED] Register a new user via Google OAuth."""
     result = await auth_service.register_legacy(
@@ -58,22 +56,17 @@ async def register_user(
         email=email,
         display_name=display_name,
         avatar_url=avatar_url,
-        source=api_key_info.get("source"),
     )
     return APIResponse(success=True, data=result)
 
 
 @router.post("/register/email", response_model=APIResponse)
-async def register_user_email(
-    request: EmailRegisterRequest,
-    api_key_info: dict = Depends(get_api_key_info),
-):
+async def register_user_email(request: EmailRegisterRequest):
     """Register a new user with email/password."""
     result = await auth_service.register_email(
         email=request.email,
         password=request.password,
         user_name=request.user_name,
-        source=api_key_info.get("source"),
     )
     return APIResponse(success=True, data=result)
 

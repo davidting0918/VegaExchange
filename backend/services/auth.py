@@ -245,7 +245,7 @@ async def google_auth(id_token: str) -> dict:
 
 async def register_legacy(
     google_id: str, email: str, display_name: Optional[str],
-    avatar_url: Optional[str], source: Optional[str],
+    avatar_url: Optional[str],
 ) -> dict:
     """Legacy Google registration (deprecated)."""
     db = get_db()
@@ -261,13 +261,13 @@ async def register_legacy(
 
     user = await db.execute_returning(
         """
-        INSERT INTO users (user_id, google_id, email, user_name, photo_url, source)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO users (user_id, google_id, email, user_name, photo_url)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING *
         """,
         user_id, google_id, email,
         display_name or email.split("@")[0],
-        avatar_url, source,
+        avatar_url,
     )
 
     await create_initial_balances(user["user_id"], account_type="spot")
@@ -277,7 +277,7 @@ async def register_legacy(
 
 
 async def register_email(
-    email: str, password: str, user_name: Optional[str], source: Optional[str],
+    email: str, password: str, user_name: Optional[str],
 ) -> dict:
     """Register a new user with email/password."""
     db = get_db()
@@ -291,11 +291,11 @@ async def register_email(
 
     user = await db.execute_returning(
         """
-        INSERT INTO users (user_id, email, user_name, hashed_pw, source)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO users (user_id, email, user_name, hashed_pw)
+        VALUES ($1, $2, $3, $4)
         RETURNING *
         """,
-        user_id, email, user_name or email.split("@")[0], hashed_pw, source,
+        user_id, email, user_name or email.split("@")[0], hashed_pw,
     )
 
     await create_initial_balances(user["user_id"], account_type="spot")
