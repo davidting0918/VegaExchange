@@ -1,5 +1,11 @@
 """
 Response models for VegaExchange API
+
+NOTE: Domain-specific models are being migrated to backend/models/<domain>.py.
+- User models → backend/models/user.py
+- Auth models → backend/models/auth.py
+- Common models (APIResponse) → backend/models/common.py
+This file retains models not yet migrated to domain files.
 """
 
 from datetime import datetime
@@ -10,26 +16,9 @@ from pydantic import BaseModel, Field
 
 from backend.models.enums import EngineType, OrderSide, OrderStatus, OrderType, TradeStatus
 
-
-class UserResponse(BaseModel):
-    """User information response"""
-
-    user_id: str
-    email: str
-    user_name: Optional[str] = None
-    photo_url: Optional[str] = None
-    is_admin: bool = False
-    created_at: datetime
-    last_login_at: datetime
-
-
-class BalanceResponse(BaseModel):
-    """User balance for a single currency"""
-
-    currency: str
-    available: Decimal
-    locked: Decimal
-    total: Decimal = Field(description="available + locked")
+# Re-export migrated models for backward compatibility
+from backend.models.common import APIResponse, PaginatedResponse  # noqa: F401
+from backend.models.user import UserResponse, BalanceResponse  # noqa: F401
 
 
 class SymbolConfigResponse(BaseModel):
@@ -167,20 +156,6 @@ class QuoteResponse(BaseModel):
     fills: Optional[List[Dict[str, Any]]] = Field(None, description="Simulated order fills")
 
 
-class APIResponse(BaseModel):
-    """Standard API response wrapper"""
 
-    success: bool = True
-    data: Optional[Any] = None
-    error: Optional[Dict[str, str]] = None
-
-
-class PaginatedResponse(BaseModel):
-    """Paginated response wrapper"""
-
-    success: bool = True
-    data: List[Any]
-    total: int
-    page: int
-    page_size: int
-    total_pages: int
+# APIResponse and PaginatedResponse have been moved to backend/models/common.py
+# They are re-exported above for backward compatibility.

@@ -1,5 +1,9 @@
 """
 Request models for VegaExchange API
+
+NOTE: Domain-specific models are being migrated to backend/models/<domain>.py.
+- Auth models → backend/models/auth.py
+This file retains models not yet migrated to domain files.
 """
 
 from decimal import Decimal
@@ -8,6 +12,9 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, field_validator, EmailStr
 
 from backend.models.enums import EngineType, OrderSide, OrderType
+
+# Re-export migrated models for backward compatibility
+from backend.models.auth import EmailRegisterRequest, EmailLoginRequest  # noqa: F401
 
 
 class CreateSymbolRequest(BaseModel):
@@ -118,16 +125,6 @@ class RemoveLiquidityRequest(BaseModel):
         return v.upper()
 
 
-class EmailRegisterRequest(BaseModel):
-    """Request to register a new user with email/password"""
 
-    email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., min_length=3, description="Password (minimum 3 characters)")
-    user_name: Optional[str] = Field(None, description="Display name (optional, defaults to email username)")
-
-
-class EmailLoginRequest(BaseModel):
-    """Request to login with email/password"""
-
-    email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., description="User password")
+# EmailRegisterRequest and EmailLoginRequest have been moved to backend/models/auth.py
+# They are re-exported above for backward compatibility.
