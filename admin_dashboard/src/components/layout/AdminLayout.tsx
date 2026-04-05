@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { to: '/pools', label: 'Pools', icon: '◎' },
   { to: '/users', label: 'Users', icon: '◉' },
   { to: '/settings', label: 'Settings', icon: '⚙' },
+  { to: '/whitelist', label: 'Whitelist', icon: '☰' },
   { to: '/audit-log', label: 'Audit Log', icon: '▤' },
 ]
 
