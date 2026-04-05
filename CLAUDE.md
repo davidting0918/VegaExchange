@@ -58,21 +58,25 @@ python -m backend.scripts.price_lifter_trader   # Price manipulation bot
 - `clob_engine.py` - Order book with price-time priority matching
 - `engine_router.py` - Central dispatcher that routes trades to the correct engine based on `symbol_configs` table. Caches engine instances keyed by `symbol:engine_type`.
 
-**Core** (`backend/core/`):
-- `postgres_database.py` - `PostgresAsyncClient` with asyncpg connection pool (read/execute/insert helpers, auto Decimal-to-float conversion)
-- `db_manager.py` - Singleton `DatabaseManager` wrapping the async client; `get_db()` global accessor
-- `environment.py` - Auto-detects environment (test/staging/prod) from `APP_ENV` env var; global `env_config`
-- `auth.py` - FastAPI dependencies: `get_current_user`, `get_current_user_id`, `require_admin`
-- `jwt.py` - JWT creation/verification (HS256), access + refresh tokens
-- `api_key.py` / `api_key_manager.py` - API key validation for external integrations
+**Model-Router-Service architecture** — each domain has 3 files:
 
-**Routers** (`backend/routers/`): 6 routers all under `/api/` prefix:
-- `auth` - Google OAuth, email/password login, token refresh/logout
-- `admin` - Symbol and pool management (admin-only)
-- `market` - Market data across all engines
-- `pool` - AMM pool operations (swap, add/remove liquidity)
-- `orderbook` - CLOB order placement and book queries
-- `users` - User profiles, balances, trade history
+| Layer | Path | Responsibility |
+|-------|------|---------------|
+| **Models** | `backend/models/<domain>.py` | Pydantic request/response types, domain constants |
+| **Routers** | `backend/routers/<domain>.py` | Thin endpoint definitions — auth deps, call service, return `APIResponse` |
+| **Services** | `backend/services/<domain>.py` | All business logic, DB operations, external API calls |
+
+Domains: `admin`, `auth`, `market`, `orderbook`, `pool`, `user`. Shared models in `backend/models/common.py` (`APIResponse`, `PaginatedResponse`). Shared enums in `backend/models/enums.py`.
+
+**Core** (`backend/core/`) — cross-domain infrastructure only:
+- `postgres_database.py` - `PostgresAsyncClient` with asyncpg connection pool
+- `db_manager.py` - Singleton `DatabaseManager`; `get_db()` global accessor
+- `environment.py` - Auto-detects environment (test/staging/prod) from `APP_ENV`
+- `auth.py` - FastAPI dependencies: `get_current_user`, `get_current_user_id`, `require_admin`
+- `jwt.py` - JWT creation/verification (HS256), user + admin tokens (separate secrets)
+- `audit_log.py` - `@audit_logged` decorator for admin action tracking
+- `api_key.py` / `api_key_manager.py` - API key validation
+- `id_generator.py` - ID generation (user_id, admin_id, pool_id, order_id, trade_id)
 
 ### Frontend (`frontend/`)
 

@@ -13,7 +13,7 @@ from backend.engines.engine_router import EngineRouter
 from backend.models.common import APIResponse
 from backend.models.enums import OrderSide
 from backend.models.pool import PeriodKind
-from backend.models.requests import AddLiquidityRequest, RemoveLiquidityRequest, SwapRequest
+from backend.models.pool import AddLiquidityRequest, RemoveLiquidityRequest, SwapRequest
 from backend.services import pool as pool_service
 
 router = APIRouter(prefix="/api/pool", tags=["amm-pool"])
