@@ -12,8 +12,7 @@ from backend.core.dependencies import get_router
 from backend.engines.engine_router import EngineRouter
 from backend.models.common import APIResponse
 from backend.models.enums import OrderSide
-from backend.models.pool import PeriodKind
-from backend.models.pool import AddLiquidityRequest, RemoveLiquidityRequest, SwapRequest
+from backend.models.pool import AddLiquidityRequest, PeriodKind, RemoveLiquidityRequest, SwapRequest
 from backend.services import pool as pool_service
 
 router = APIRouter(prefix="/api/pool", tags=["amm-pool"])
@@ -36,17 +35,6 @@ async def get_pool_trades(
 ):
     """Get recent AMM trades for a symbol."""
     data = await pool_service.get_pool_trades(symbol, limit)
-    return APIResponse(success=True, data=data)
-
-
-@router.get("/public", response_model=APIResponse)
-async def get_pool_public(
-    symbol: str = Query(..., description="Symbol in format base-quote-settle-market"),
-    limit: int = Query(100, ge=1, le=200, description="Number of recent trades"),
-    engine_router: EngineRouter = Depends(get_router),
-):
-    """Get public pool data + recent trades in one call."""
-    data = await pool_service.get_pool_public(engine_router, symbol, limit)
     return APIResponse(success=True, data=data)
 
 
@@ -147,17 +135,6 @@ async def remove_liquidity(
     data = await pool_service.remove_liquidity(
         router, user_id, request.symbol, lp_shares=request.lp_shares,
     )
-    return APIResponse(success=True, data=data)
-
-
-@router.get("/liquidity/position", response_model=APIResponse)
-async def get_lp_position(
-    symbol: str = Query(..., description="Symbol in format base-quote-settle-market"),
-    user_id: str = Depends(get_current_user_id),
-    router: EngineRouter = Depends(get_router),
-):
-    """Get your LP position for an AMM pool."""
-    data = await pool_service.get_lp_position(router, user_id, symbol)
     return APIResponse(success=True, data=data)
 
 

@@ -196,3 +196,9 @@ async def get_user_portfolio(user_id: str) -> dict:
         "balances": portfolio_items,
         "total_value_usdt": float(total_value),
     }
+
+
+async def get_user_info(user_id: str) -> Optional[dict]:
+    """Get user record by ID. Returns None if not found."""
+    db = get_db()
+    return await db.read_one("SELECT * FROM users WHERE user_id = $1", user_id)

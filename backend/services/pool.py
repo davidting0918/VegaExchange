@@ -4,7 +4,7 @@ Pool domain service — AMM pool queries, swap, liquidity, charts.
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import HTTPException
 
@@ -111,50 +111,6 @@ async def get_pool_trades(symbol: str, limit: int = 100) -> dict:
     )
 
     data: dict = {"symbol": symbol_str, "trades": trades}
-    return _enrich_with_components(data, symbol)
-
-
-async def get_pool_public(router: EngineRouter, symbol: str, limit: int = 100) -> dict:
-    """Get public pool data + recent trades in one call."""
-    symbol_str = parse_symbol_path(symbol)
-    engine = await router._get_engine(symbol_str, EngineType.AMM)
-    if not engine:
-        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
-
-    pool = await engine._get_pool()
-    if not pool:
-        raise HTTPException(status_code=404, detail=f"No pool data for '{symbol_str}'")
-
-    db = get_db()
-    trades = await db.read(
-        """
-        SELECT t.trade_id, t.side, t.price, t.quantity, t.quote_amount,
-               t.fee_amount, t.fee_asset, t.created_at
-        FROM trades t
-        JOIN symbol_configs sc USING (symbol_id)
-        WHERE sc.symbol = $1 AND sc.engine_type = 0 AND t.status = 1
-        ORDER BY t.created_at DESC
-        LIMIT $2
-        """,
-        symbol_str,
-        limit,
-    )
-
-    data: dict = {
-        "symbol": symbol_str,
-        "pool_id": pool["pool_id"],
-        "reserve_base": float(pool["reserve_base"]),
-        "reserve_quote": float(pool["reserve_quote"]),
-        "k_value": float(pool["k_value"]),
-        "fee_rate": float(pool["fee_rate"]),
-        "total_volume_base": float(pool["total_volume_base"]),
-        "total_volume_quote": float(pool["total_volume_quote"]),
-        "total_fees_collected": float(pool["total_fees_collected"]),
-        "total_lp_shares": float(pool["total_lp_shares"]),
-        "current_price": float(pool["reserve_quote"]) / float(pool["reserve_base"])
-        if float(pool["reserve_base"]) > 0 else 0,
-        "trades": trades,
-    }
     return _enrich_with_components(data, symbol)
 
 
@@ -476,44 +432,6 @@ async def remove_liquidity(router: EngineRouter, user_id: str, symbol: str, lp_s
     return data
 
 
-async def get_lp_position(router: EngineRouter, user_id: str, symbol: str) -> dict:
-    """Get user's LP position for an AMM pool."""
-    symbol_str = parse_symbol_path(symbol)
-    engine = await router._get_engine(symbol_str, EngineType.AMM)
-    if not engine:
-        raise HTTPException(status_code=404, detail=f"AMM pool '{symbol_str}' not found")
-
-    position = await engine._get_lp_position(user_id)
-
-    if not position:
-        data: dict = {"symbol": symbol_str, "lp_shares": 0, "has_position": False}
-        return _enrich_with_components(data, symbol)
-
-    pool = await engine._get_pool()
-    if pool:
-        user_lp = Decimal(str(position["lp_shares"]))
-        total_lp = Decimal(str(pool["total_lp_shares"]))
-        rb = Decimal(str(pool["reserve_base"]))
-        rq = Decimal(str(pool["reserve_quote"]))
-        share_ratio = user_lp / total_lp if total_lp > 0 else Decimal("0")
-        estimated_base = rb * share_ratio
-        estimated_quote = rq * share_ratio
-    else:
-        share_ratio = estimated_base = estimated_quote = Decimal("0")
-
-    data = {
-        "symbol": symbol_str,
-        "lp_shares": float(position["lp_shares"]),
-        "initial_base_amount": float(position["initial_base_amount"]),
-        "initial_quote_amount": float(position["initial_quote_amount"]),
-        "estimated_base_value": float(estimated_base),
-        "estimated_quote_value": float(estimated_quote),
-        "pool_share_percentage": float(share_ratio),
-        "has_position": True,
-    }
-    return _enrich_with_components(data, symbol)
-
-
 async def get_lp_history(router: EngineRouter, user_id: str, symbol: str) -> dict:
     """Get user's LP event history."""
     symbol_str = parse_symbol_path(symbol)
@@ -550,3 +468,74 @@ async def get_lp_history(router: EngineRouter, user_id: str, symbol: str) -> dic
 
     data: dict = {"symbol": symbol_str, "events": formatted}
     return _enrich_with_components(data, symbol)
+
+
+# =============================================================================
+# Shared helpers (used by both pool and admin routers)
+# =============================================================================
+
+async def get_all_pools_enriched() -> List[dict]:
+    """Get all AMM pools with calculated price and TVL. Used by admin and pool list."""
+    db = get_db()
+    return await db.read(
+        """
+        SELECT
+            ap.pool_id, sc.symbol, sc.symbol_id, sc.base, sc.quote,
+            ap.reserve_base, ap.reserve_quote, ap.k_value, ap.fee_rate,
+            ap.total_lp_shares, ap.total_volume_base, ap.total_volume_quote,
+            ap.total_fees_collected, ap.is_active,
+            CASE WHEN ap.reserve_base > 0 THEN ap.reserve_quote / ap.reserve_base ELSE 0 END as price,
+            ap.reserve_quote * 2 as tvl_usdt,
+            ap.created_at, ap.updated_at
+        FROM amm_pools ap
+        JOIN symbol_configs sc ON ap.symbol_id = sc.symbol_id
+        ORDER BY ap.reserve_quote * 2 DESC
+        """
+    )
+
+
+async def get_pool_detail(pool_id: str) -> dict:
+    """Get pool info + LP positions + recent swaps. Used by admin pool detail."""
+    db = get_db()
+
+    pool = await db.read_one(
+        """
+        SELECT
+            ap.*, sc.symbol, sc.base, sc.quote, sc.market, sc.settle,
+            CASE WHEN ap.reserve_base > 0 THEN ap.reserve_quote / ap.reserve_base ELSE 0 END as price,
+            ap.reserve_quote * 2 as tvl_usdt
+        FROM amm_pools ap
+        JOIN symbol_configs sc ON ap.symbol_id = sc.symbol_id
+        WHERE ap.pool_id = $1
+        """,
+        pool_id,
+    )
+    if not pool:
+        raise HTTPException(status_code=404, detail=f"Pool '{pool_id}' not found")
+
+    lp_positions = await db.read(
+        """
+        SELECT lp.user_id, u.user_name, lp.lp_shares,
+               CASE WHEN $2 > 0 THEN lp.lp_shares / $2 * 100 ELSE 0 END as share_pct
+        FROM lp_positions lp
+        JOIN users u ON lp.user_id = u.user_id
+        WHERE lp.pool_id = $1 AND lp.lp_shares > 0
+        ORDER BY lp.lp_shares DESC
+        """,
+        pool_id,
+        pool["total_lp_shares"],
+    )
+
+    recent_swaps = await db.read(
+        """
+        SELECT t.trade_id, t.user_id, t.side, t.price, t.quantity,
+               t.quote_amount, t.fee_amount, t.fee_asset, t.created_at
+        FROM trades t
+        WHERE t.symbol_id = $1 AND t.engine_type = 0 AND t.status = 1
+        ORDER BY t.created_at DESC
+        LIMIT 20
+        """,
+        pool["symbol_id"],
+    )
+
+    return {"pool": pool, "lp_positions": lp_positions, "recent_swaps": recent_swaps}

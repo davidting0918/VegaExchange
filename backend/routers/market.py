@@ -25,13 +25,6 @@ async def get_all_markets(
     return APIResponse(success=True, data=data)
 
 
-@router.get("/list_symbols", response_model=APIResponse)
-async def list_symbols(router: EngineRouter = Depends(get_router)):
-    """Get all active trading symbols."""
-    symbols = await market_service.list_symbols(router)
-    return APIResponse(success=True, data=symbols)
-
-
 @router.get("/engines", response_model=APIResponse)
 async def get_symbol_engines(
     symbol: str = Query(..., description="Symbol (e.g. AMM/USDT-USDT:SPOT)"),

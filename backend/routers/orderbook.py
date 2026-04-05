@@ -79,25 +79,13 @@ async def cancel_order(
     return APIResponse(success=True, data=data)
 
 
-@router.get("/orders", response_model=APIResponse)
-async def get_user_orders(
-    symbol: str = Query(..., description="Symbol"),
-    user_id: str = Depends(get_current_user_id),
-    status: Optional[List[OrderStatus]] = Query(None, description="Filter by status"),
-    limit: int = Query(50, ge=1, le=200, description="Max results"),
-):
-    """Get your orders for a specific CLOB market."""
-    data = await orderbook_service.get_user_orders(user_id, symbol, status, limit)
-    return APIResponse(success=True, data=data)
-
-
 @router.get("/user/orders", response_model=APIResponse)
-async def get_all_user_orders(
+async def get_user_orders(
     user_id: str = Depends(get_current_user_id),
-    symbol: Optional[str] = Query(None, description="Filter by symbol"),
+    symbol: Optional[str] = Query(None, description="Filter by symbol (optional)"),
     status: Optional[List[OrderStatus]] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=200, description="Max results"),
 ):
-    """Get all your orders across all CLOB markets."""
+    """Get your orders across all CLOB markets. Optionally filter by symbol."""
     data = await orderbook_service.get_all_user_orders(user_id, symbol, status, limit)
     return APIResponse(success=True, data=data)

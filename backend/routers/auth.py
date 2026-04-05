@@ -4,8 +4,6 @@ Authentication API Routes
 Thin router — delegates all business logic to services/auth.py.
 """
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, Query
 from fastapi.security import OAuth2PasswordRequestForm
 
@@ -23,7 +21,7 @@ router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 
 # =============================================================================
-# Google OAuth Endpoints
+# Google OAuth
 # =============================================================================
 
 @router.post("/google", response_model=APIResponse)
@@ -40,25 +38,8 @@ async def google_auth(request: GoogleAuthRequest):
 
 
 # =============================================================================
-# Legacy Registration Endpoints (kept for backward compatibility)
+# Email Auth
 # =============================================================================
-
-@router.post("/register", response_model=APIResponse, deprecated=True)
-async def register_user(
-    google_id: str = Query(..., description="Google OAuth ID"),
-    email: str = Query(..., description="User email"),
-    display_name: Optional[str] = Query(None, description="Display name"),
-    avatar_url: Optional[str] = Query(None, description="Avatar URL"),
-):
-    """[DEPRECATED] Register a new user via Google OAuth."""
-    result = await auth_service.register_legacy(
-        google_id=google_id,
-        email=email,
-        display_name=display_name,
-        avatar_url=avatar_url,
-    )
-    return APIResponse(success=True, data=result)
-
 
 @router.post("/register/email", response_model=APIResponse)
 async def register_user_email(request: EmailRegisterRequest):
@@ -68,15 +49,6 @@ async def register_user_email(request: EmailRegisterRequest):
         password=request.password,
         user_name=request.user_name,
     )
-    return APIResponse(success=True, data=result)
-
-
-@router.post("/login", response_model=APIResponse, deprecated=True)
-async def login_user(
-    google_id: str = Query(..., description="Google OAuth ID"),
-):
-    """[DEPRECATED] Use /api/auth/google instead."""
-    result = await auth_service.login_legacy(google_id)
     return APIResponse(success=True, data=result)
 
 
@@ -91,16 +63,16 @@ async def login_user_email(request: EmailLoginRequest):
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
 ):
-    """
-    OAuth2 password grant token endpoint.
-
-    Used by Swagger UI and other OAuth2-compliant clients.
-    """
+    """OAuth2 password grant token endpoint. Used by Swagger UI."""
     return await auth_service.login_oauth2_password(
         email=form_data.username,
         password=form_data.password,
     )
 
+
+# =============================================================================
+# Token Management
+# =============================================================================
 
 @router.post("/logout", response_model=APIResponse)
 async def logout_user(current_user: dict = Depends(get_current_user)):
@@ -119,16 +91,12 @@ async def refresh_token(
 
 
 # =============================================================================
-# Admin Authentication Endpoints
+# Admin Authentication
 # =============================================================================
 
 @router.post("/admin/google", response_model=APIResponse)
 async def admin_google_auth(request: AdminGoogleAuthRequest):
-    """
-    Admin Google OAuth authentication endpoint.
-
-    Validates against admin whitelist. Completely independent from exchange user auth.
-    """
+    """Admin Google OAuth. Validates against admin whitelist."""
     result = await auth_service.admin_google_auth(request.id_token)
     return APIResponse(success=True, data=result)
 
@@ -137,7 +105,7 @@ async def admin_google_auth(request: AdminGoogleAuthRequest):
 async def admin_refresh_token(
     refresh_token: str = Query(..., description="Admin refresh token"),
 ):
-    """Refresh admin access token using admin refresh token."""
+    """Refresh admin access token."""
     result = await auth_service.refresh_admin_token(refresh_token)
     return APIResponse(success=True, data=result)
 
