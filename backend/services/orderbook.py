@@ -151,36 +151,6 @@ async def cancel_order(router: EngineRouter, user_id: str, symbol: str, order_id
     return result
 
 
-async def get_user_orders(
-    user_id: str,
-    symbol: str,
-    status: Optional[List[OrderStatus]] = None,
-    limit: int = 50,
-) -> dict:
-    """Get user's orders for a specific CLOB market."""
-    db = get_db()
-
-    query = """
-        SELECT o.*, sc.symbol FROM orderbook_orders o
-        JOIN symbol_configs sc USING (symbol_id)
-        WHERE o.user_id = $1 AND sc.symbol = $2 AND sc.engine_type = 1
-    """
-    params: list = [user_id, symbol.upper()]
-    param_idx = 3
-
-    if status:
-        status_values = [s.value for s in status]
-        query += f" AND o.status = ANY(${param_idx})"
-        params.append(status_values)
-        param_idx += 1
-
-    query += f" ORDER BY o.created_at DESC LIMIT ${param_idx}"
-    params.append(limit)
-
-    orders = await db.read(query, *params)
-    return {"symbol": symbol.upper(), "orders": orders}
-
-
 async def get_all_user_orders(
     user_id: str,
     symbol: Optional[str] = None,

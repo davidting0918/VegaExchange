@@ -238,80 +238,8 @@ async def get_audit_log(
 
 
 # =============================================================================
-# Symbol CRUD (#31)
+# Symbol CRUD (#31) — read functions moved to services/market.py
 # =============================================================================
-
-async def get_symbols(
-    engine_type: Optional[int] = None,
-    is_active: Optional[bool] = None,
-    market: Optional[str] = None,
-) -> List[dict]:
-    """Get all symbols with full config, optionally filtered. Includes pool info for AMM symbols."""
-    db = get_db()
-
-    conditions = []
-    params: list = []
-    param_idx = 1
-
-    if engine_type is not None:
-        conditions.append(f"sc.engine_type = ${param_idx}")
-        params.append(engine_type)
-        param_idx += 1
-
-    if is_active is not None:
-        conditions.append(f"sc.is_active = ${param_idx}")
-        params.append(is_active)
-        param_idx += 1
-
-    if market:
-        conditions.append(f"sc.market = ${param_idx}")
-        params.append(market.upper())
-        param_idx += 1
-
-    where_clause = " AND ".join(conditions) if conditions else "TRUE"
-
-    symbols = await db.read(
-        f"""
-        SELECT sc.*,
-               ap.pool_id, ap.reserve_base, ap.reserve_quote, ap.fee_rate,
-               ap.total_lp_shares, ap.total_volume_quote, ap.total_fees_collected,
-               CASE WHEN ap.reserve_base > 0 THEN ap.reserve_quote / ap.reserve_base ELSE NULL END as current_price,
-               CASE WHEN ap.reserve_quote IS NOT NULL THEN ap.reserve_quote * 2 ELSE NULL END as tvl_usdt
-        FROM symbol_configs sc
-        LEFT JOIN amm_pools ap ON sc.symbol_id = ap.symbol_id
-        WHERE {where_clause}
-        ORDER BY sc.created_at DESC
-        """,
-        *params,
-    )
-
-    return symbols
-
-
-async def get_symbol(symbol_id: int) -> dict:
-    """Get detailed symbol config + associated pool data (if AMM)."""
-    db = get_db()
-
-    symbol = await db.read_one(
-        """
-        SELECT sc.*,
-               ap.pool_id, ap.reserve_base, ap.reserve_quote, ap.k_value,
-               ap.fee_rate, ap.total_lp_shares, ap.total_volume_base, ap.total_volume_quote,
-               ap.total_fees_collected, ap.is_active as pool_is_active,
-               CASE WHEN ap.reserve_base > 0 THEN ap.reserve_quote / ap.reserve_base ELSE NULL END as current_price,
-               CASE WHEN ap.reserve_quote IS NOT NULL THEN ap.reserve_quote * 2 ELSE NULL END as tvl_usdt
-        FROM symbol_configs sc
-        LEFT JOIN amm_pools ap ON sc.symbol_id = ap.symbol_id
-        WHERE sc.symbol_id = $1
-        """,
-        symbol_id,
-    )
-
-    if not symbol:
-        raise HTTPException(status_code=404, detail=f"Symbol with id {symbol_id} not found")
-
-    return symbol
-
 
 async def update_symbol(symbol_id: int, request: UpdateSymbolRequest, router: EngineRouter) -> dict:
     """Update mutable fields of a symbol config. For AMM symbols, also update pool fee_rate."""
@@ -376,7 +304,8 @@ async def update_symbol(symbol_id: int, request: UpdateSymbolRequest, router: En
     router.invalidate_cache(existing["symbol"])
 
     # Return updated symbol
-    return await get_symbol(symbol_id)
+    from backend.services.market import get_symbol_by_id
+    return await get_symbol_by_id(symbol_id)
 
 
 # =============================================================================
@@ -461,86 +390,11 @@ async def remove_whitelist(whitelist_id: int) -> dict:
 
 
 # =============================================================================
-# Pool Management (#32)
+# Pool Management (#32) — read functions moved to services/pool.py
 # =============================================================================
 
-async def get_admin_pools() -> List[dict]:
-    """Get all AMM pools with enriched data for admin view."""
-    db = get_db()
-
-    pools = await db.read(
-        """
-        SELECT
-            ap.pool_id, sc.symbol, sc.symbol_id, sc.base, sc.quote,
-            ap.reserve_base, ap.reserve_quote, ap.k_value, ap.fee_rate,
-            ap.total_lp_shares, ap.total_volume_base, ap.total_volume_quote,
-            ap.total_fees_collected, ap.is_active,
-            CASE WHEN ap.reserve_base > 0 THEN ap.reserve_quote / ap.reserve_base ELSE 0 END as price,
-            ap.reserve_quote * 2 as tvl_usdt,
-            ap.created_at, ap.updated_at
-        FROM amm_pools ap
-        JOIN symbol_configs sc ON ap.symbol_id = sc.symbol_id
-        ORDER BY ap.reserve_quote * 2 DESC
-        """
-    )
-    return pools
-
-
-async def get_admin_pool(pool_id: str) -> dict:
-    """Get detailed pool info + LP positions + recent swaps."""
-    db = get_db()
-
-    pool = await db.read_one(
-        """
-        SELECT
-            ap.*, sc.symbol, sc.base, sc.quote, sc.market, sc.settle,
-            CASE WHEN ap.reserve_base > 0 THEN ap.reserve_quote / ap.reserve_base ELSE 0 END as price,
-            ap.reserve_quote * 2 as tvl_usdt
-        FROM amm_pools ap
-        JOIN symbol_configs sc ON ap.symbol_id = sc.symbol_id
-        WHERE ap.pool_id = $1
-        """,
-        pool_id,
-    )
-    if not pool:
-        raise HTTPException(status_code=404, detail=f"Pool '{pool_id}' not found")
-
-    # LP positions
-    lp_positions = await db.read(
-        """
-        SELECT lp.user_id, u.user_name, lp.lp_shares,
-               CASE WHEN $2 > 0 THEN lp.lp_shares / $2 * 100 ELSE 0 END as share_pct
-        FROM lp_positions lp
-        JOIN users u ON lp.user_id = u.user_id
-        WHERE lp.pool_id = $1 AND lp.lp_shares > 0
-        ORDER BY lp.lp_shares DESC
-        """,
-        pool_id,
-        pool["total_lp_shares"],
-    )
-
-    # Recent swaps
-    recent_swaps = await db.read(
-        """
-        SELECT t.trade_id, t.user_id, t.side, t.price, t.quantity,
-               t.quote_amount, t.fee_amount, t.fee_asset, t.created_at
-        FROM trades t
-        WHERE t.symbol_id = $1 AND t.engine_type = 0 AND t.status = 1
-        ORDER BY t.created_at DESC
-        LIMIT 20
-        """,
-        pool["symbol_id"],
-    )
-
-    return {
-        "pool": pool,
-        "lp_positions": lp_positions,
-        "recent_swaps": recent_swaps,
-    }
-
-
 # =============================================================================
-# User Management (#33)
+# User Management (#33) — get_admin_user moved to use services/user.py
 # =============================================================================
 
 async def get_admin_users(
@@ -600,39 +454,6 @@ async def get_admin_users(
         "limit": limit,
         "offset": offset,
     }
-
-
-async def get_admin_user(user_id: str) -> dict:
-    """Get full user profile + balances + recent trades."""
-    db = get_db()
-
-    user = await db.read_one("SELECT * FROM users WHERE user_id = $1", user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
-
-    balances = await db.read(
-        """
-        SELECT currency, available, locked, (available + locked) as total
-        FROM user_balances
-        WHERE user_id = $1 AND account_type = 'spot'
-        ORDER BY currency
-        """,
-        user_id,
-    )
-
-    trades = await db.read(
-        """
-        SELECT t.*, sc.symbol
-        FROM trades t
-        JOIN symbol_configs sc USING (symbol_id)
-        WHERE t.user_id = $1
-        ORDER BY t.created_at DESC
-        LIMIT 50
-        """,
-        user_id,
-    )
-
-    return {"user": user, "balances": balances, "trades": trades}
 
 
 async def update_user_balance(user_id: str, currency: str, available: Decimal) -> dict:
@@ -710,13 +531,14 @@ async def reset_user_balances(user_id: str) -> dict:
 
 
 # =============================================================================
-# Dashboard Stats (#30)
+# Dashboard (#30) — stats + recent activity in one call
 # =============================================================================
 
-async def get_dashboard_stats() -> dict:
-    """Get aggregated platform statistics."""
+async def get_dashboard(period: str = "7d") -> dict:
+    """Get platform stats + recent activity in one response."""
     db = get_db()
 
+    # Stats
     total_users = await db.read_one("SELECT COUNT(*) as count FROM users")
     active_users_24h = await db.read_one(
         "SELECT COUNT(*) as count FROM users WHERE last_login_at > NOW() - INTERVAL '24 hours'"
@@ -736,23 +558,7 @@ async def get_dashboard_stats() -> dict:
         "SELECT COALESCE(SUM(reserve_quote * 2), 0) as tvl FROM amm_pools WHERE is_active = TRUE"
     )
 
-    return {
-        "total_users": total_users["count"] if total_users else 0,
-        "active_users_24h": active_users_24h["count"] if active_users_24h else 0,
-        "new_users_7d": new_users_7d["count"] if new_users_7d else 0,
-        "total_symbols": total_symbols["count"] if total_symbols else 0,
-        "active_symbols": active_symbols["count"] if active_symbols else 0,
-        "total_pools": total_pools["count"] if total_pools else 0,
-        "total_trades_24h": trades_24h["count"] if trades_24h else 0,
-        "total_volume_24h_usdt": float(trades_24h["volume"]) if trades_24h else 0,
-        "total_pool_tvl_usdt": float(pool_tvl["tvl"]) if pool_tvl else 0,
-    }
-
-
-async def get_recent_activity(period: str = "7d") -> dict:
-    """Get daily trade volume and new user counts for charts."""
-    db = get_db()
-
+    # Recent activity
     days = 30 if period == "30d" else 7
 
     daily_trades = await db.read(
@@ -782,7 +588,20 @@ async def get_recent_activity(period: str = "7d") -> dict:
     )
 
     return {
-        "daily_trades": daily_trades,
-        "daily_new_users": daily_new_users,
-        "period": period,
+        "stats": {
+            "total_users": total_users["count"] if total_users else 0,
+            "active_users_24h": active_users_24h["count"] if active_users_24h else 0,
+            "new_users_7d": new_users_7d["count"] if new_users_7d else 0,
+            "total_symbols": total_symbols["count"] if total_symbols else 0,
+            "active_symbols": active_symbols["count"] if active_symbols else 0,
+            "total_pools": total_pools["count"] if total_pools else 0,
+            "total_trades_24h": trades_24h["count"] if trades_24h else 0,
+            "total_volume_24h_usdt": float(trades_24h["volume"]) if trades_24h else 0,
+            "total_pool_tvl_usdt": float(pool_tvl["tvl"]) if pool_tvl else 0,
+        },
+        "recent_activity": {
+            "daily_trades": daily_trades,
+            "daily_new_users": daily_new_users,
+            "period": period,
+        },
     }

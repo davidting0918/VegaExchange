@@ -243,39 +243,6 @@ async def google_auth(id_token: str) -> dict:
     }
 
 
-async def register_legacy(
-    google_id: str, email: str, display_name: Optional[str],
-    avatar_url: Optional[str],
-) -> dict:
-    """Legacy Google registration (deprecated)."""
-    db = get_db()
-
-    existing = await db.read_one(
-        "SELECT user_id FROM users WHERE google_id = $1 OR email = $2",
-        google_id, email,
-    )
-    if existing:
-        raise HTTPException(status_code=400, detail="User already exists")
-
-    user_id = await _ensure_unique_user_id()
-
-    user = await db.execute_returning(
-        """
-        INSERT INTO users (user_id, google_id, email, user_name, photo_url)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING *
-        """,
-        user_id, google_id, email,
-        display_name or email.split("@")[0],
-        avatar_url,
-    )
-
-    await create_initial_balances(user["user_id"], account_type="spot")
-    balances = await get_user_balances(user["user_id"], include_total=False)
-
-    return {"user": user, "balances": balances}
-
-
 async def register_email(
     email: str, password: str, user_name: Optional[str],
 ) -> dict:
@@ -320,21 +287,6 @@ async def login_email(email: str, password: str) -> dict:
 
     if not verify_password(password, user["hashed_pw"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    await _update_last_login(user["user_id"])
-    token_data = await _create_and_store_tokens(user["user_id"])
-    balances = await get_user_balances(user["user_id"], include_total=True)
-
-    return {"user": user, "balances": balances, **token_data}
-
-
-async def login_legacy(google_id: str) -> dict:
-    """Legacy Google login (deprecated)."""
-    db = get_db()
-
-    user = await db.read_one("SELECT * FROM users WHERE google_id = $1", google_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found. Please register first.")
 
     await _update_last_login(user["user_id"])
     token_data = await _create_and_store_tokens(user["user_id"])

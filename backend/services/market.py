@@ -43,9 +43,78 @@ async def get_all_markets(router: EngineRouter, symbol: Optional[str] = None, en
     }
 
 
-async def list_symbols(router: EngineRouter) -> list:
-    """Get all active trading symbols."""
-    return await router.get_all_symbols()
+async def get_symbols(
+    engine_type: Optional[int] = None,
+    is_active: Optional[bool] = True,
+    market: Optional[str] = None,
+) -> list:
+    """
+    Get symbols with full config, optionally filtered.
+    Includes pool info for AMM symbols via LEFT JOIN.
+    Used by both exchange (is_active=True) and admin (is_active=None for all).
+    """
+    db = get_db()
+
+    conditions = []
+    params: list = []
+    param_idx = 1
+
+    if engine_type is not None:
+        conditions.append(f"sc.engine_type = ${param_idx}")
+        params.append(engine_type)
+        param_idx += 1
+
+    if is_active is not None:
+        conditions.append(f"sc.is_active = ${param_idx}")
+        params.append(is_active)
+        param_idx += 1
+
+    if market:
+        conditions.append(f"sc.market = ${param_idx}")
+        params.append(market.upper())
+        param_idx += 1
+
+    where_clause = " AND ".join(conditions) if conditions else "TRUE"
+
+    return await db.read(
+        f"""
+        SELECT sc.*,
+               ap.pool_id, ap.reserve_base, ap.reserve_quote, ap.fee_rate,
+               ap.total_lp_shares, ap.total_volume_quote, ap.total_fees_collected,
+               CASE WHEN ap.reserve_base > 0 THEN ap.reserve_quote / ap.reserve_base ELSE NULL END as current_price,
+               CASE WHEN ap.reserve_quote IS NOT NULL THEN ap.reserve_quote * 2 ELSE NULL END as tvl_usdt
+        FROM symbol_configs sc
+        LEFT JOIN amm_pools ap ON sc.symbol_id = ap.symbol_id
+        WHERE {where_clause}
+        ORDER BY sc.created_at DESC
+        """,
+        *params,
+    )
+
+
+async def get_symbol_by_id(symbol_id: int) -> dict:
+    """Get detailed symbol config + associated pool data by symbol_id."""
+    db = get_db()
+
+    symbol = await db.read_one(
+        """
+        SELECT sc.*,
+               ap.pool_id, ap.reserve_base, ap.reserve_quote, ap.k_value,
+               ap.fee_rate, ap.total_lp_shares, ap.total_volume_base, ap.total_volume_quote,
+               ap.total_fees_collected, ap.is_active as pool_is_active,
+               CASE WHEN ap.reserve_base > 0 THEN ap.reserve_quote / ap.reserve_base ELSE NULL END as current_price,
+               CASE WHEN ap.reserve_quote IS NOT NULL THEN ap.reserve_quote * 2 ELSE NULL END as tvl_usdt
+        FROM symbol_configs sc
+        LEFT JOIN amm_pools ap ON sc.symbol_id = ap.symbol_id
+        WHERE sc.symbol_id = $1
+        """,
+        symbol_id,
+    )
+
+    if not symbol:
+        raise HTTPException(status_code=404, detail=f"Symbol with id {symbol_id} not found")
+
+    return symbol
 
 
 async def get_symbol_engines(router: EngineRouter, symbol: str) -> dict:
