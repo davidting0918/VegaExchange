@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) UNIQUE NOT NULL,
     photo_url TEXT,
     hashed_pw TEXT,
-    source VARCHAR(50),  -- Registration source (from api_keys.source)
     is_active BOOLEAN DEFAULT TRUE,
     is_admin BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -292,8 +291,7 @@ CREATE TABLE IF NOT EXISTS admin_whitelist (
     id SERIAL PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
     description TEXT,                -- optional note (e.g., "David - project owner")
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    created_by TEXT                   -- manually inserted, nullable for bootstrap
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 CREATE INDEX idx_admin_whitelist_email ON admin_whitelist(email);
