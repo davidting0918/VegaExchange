@@ -1,5 +1,5 @@
 """
-Admin domain models — symbol/pool creation requests.
+Admin domain models — symbol/pool creation, settings, whitelist requests.
 """
 
 from decimal import Decimal
@@ -8,6 +8,30 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from backend.models.enums import EngineType
+
+
+class UpdateSymbolRequest(BaseModel):
+    """Request to update an existing symbol configuration (mutable fields only)"""
+
+    engine_params: Optional[Dict[str, Any]] = Field(None, description="Engine-specific parameters")
+    min_trade_amount: Optional[Decimal] = Field(None, description="Minimum trade amount")
+    max_trade_amount: Optional[Decimal] = Field(None, description="Maximum trade amount")
+    price_precision: Optional[int] = Field(None, description="Price decimal precision")
+    quantity_precision: Optional[int] = Field(None, description="Quantity decimal precision")
+    fee_rate: Optional[Decimal] = Field(None, ge=0, le=1, description="AMM pool fee rate (only for AMM symbols)")
+
+
+class UpdateSettingRequest(BaseModel):
+    """Request to update a platform setting"""
+
+    value: Any = Field(..., description="New setting value (JSONB)")
+
+
+class AddWhitelistRequest(BaseModel):
+    """Request to add an email to admin whitelist"""
+
+    email: str = Field(..., description="Email address to whitelist")
+    description: Optional[str] = Field(None, description="Optional note about this admin")
 
 
 class CreateSymbolRequest(BaseModel):

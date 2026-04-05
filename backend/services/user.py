@@ -5,8 +5,9 @@ All DB operations for the user domain live here.
 Routers call these functions; they never query the DB directly.
 """
 
+import time
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from backend.core.db_manager import get_db
 
@@ -18,12 +19,42 @@ DEFAULT_BALANCES = {
     "VEGA": Decimal("10000"),
 }
 
+# In-memory cache for init_funding setting (avoid DB query on every registration)
+_init_funding_cache: Optional[Dict[str, Decimal]] = None
+_init_funding_cache_ts: float = 0
+_CACHE_TTL_SECONDS = 60
+
+
+async def _get_init_funding() -> Dict[str, Decimal]:
+    """Get initial funding config from platform_settings, with in-memory cache and fallback."""
+    global _init_funding_cache, _init_funding_cache_ts
+
+    now = time.time()
+    if _init_funding_cache is not None and (now - _init_funding_cache_ts) < _CACHE_TTL_SECONDS:
+        return _init_funding_cache
+
+    try:
+        db = get_db()
+        row = await db.read_one(
+            "SELECT value FROM platform_settings WHERE key = 'init_funding'"
+        )
+        if row and row.get("value"):
+            funding = {k: Decimal(str(v)) for k, v in row["value"].items()}
+            _init_funding_cache = funding
+            _init_funding_cache_ts = now
+            return funding
+    except Exception:
+        pass
+
+    return DEFAULT_BALANCES
+
 
 async def create_initial_balances(user_id: str, account_type: str = "spot") -> None:
-    """Create initial balances for a new user."""
+    """Create initial balances for a new user using platform_settings or fallback defaults."""
     db = get_db()
+    balances = await _get_init_funding()
 
-    for currency, amount in DEFAULT_BALANCES.items():
+    for currency, amount in balances.items():
         await db.execute(
             """
             INSERT INTO user_balances (user_id, account_type, currency, available, locked)
