@@ -164,3 +164,46 @@ export function groupSymbolsByEngine(symbols: Symbol[]): {
     clob: symbols.filter(s => s.engine_type === 1),
   }
 }
+
+// ── New simplified URL helpers (Market Taxonomy refactor) ──
+
+/**
+ * Build URL path for spot trading page.
+ * Returns: "/trade/spot/BASE-QUOTE"
+ */
+export function toSpotTradePath(symbol: Symbol | string): string {
+  if (typeof symbol === 'object') {
+    return `/trade/spot/${symbol.base}-${symbol.quote}`
+  }
+  const parts = parseSymbolToPath(symbol)
+  if (parts) return `/trade/spot/${parts.base}-${parts.quote}`
+  return `/trade/spot/${symbol}`
+}
+
+/**
+ * Build URL path for pool detail page (simplified).
+ * Returns: "/pools/BASE-QUOTE"
+ */
+export function toPoolPath(symbol: Symbol | string): string {
+  if (typeof symbol === 'object') {
+    return `/pools/${symbol.base}-${symbol.quote}`
+  }
+  const parts = parseSymbolToPath(symbol)
+  if (parts) return `/pools/${parts.base}-${parts.quote}`
+  return `/pools/${symbol}`
+}
+
+/**
+ * Parse simplified pair URL param (e.g. "BTC-USDT") into components.
+ * Infers settle=quote and market from context (default SPOT).
+ */
+export function parsePairParam(pair: string, market: string = 'SPOT'): SymbolPathComponents | null {
+  const parts = pair.split('-')
+  if (parts.length < 2) return null
+  return {
+    base: parts[0].toUpperCase(),
+    quote: parts[1].toUpperCase(),
+    settle: parts[1].toUpperCase(), // settle defaults to quote
+    market: market.toUpperCase(),
+  }
+}

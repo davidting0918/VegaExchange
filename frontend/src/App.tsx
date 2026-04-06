@@ -5,8 +5,9 @@ import { LoginPage } from './components/auth/LoginPage'
 import { RegisterPage } from './components/auth/RegisterPage'
 import { DashboardPage } from './components/dashboard/DashboardPage'
 import { TradingPage } from './components/trading/TradingPage'
-import { PoolDetailPage } from './components/pool/PoolDetailPage'
 import { MarketPage } from './components/market/MarketPage'
+import { PoolsListPage } from './components/pool/PoolsListPage'
+import { PoolDetailPage } from './components/pool/PoolDetailPage'
 import { LoadingSpinner } from './components/common/LoadingSpinner'
 
 // Protected route wrapper
@@ -48,28 +49,13 @@ const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 }
 
 function App() {
-  // Initialize auth state on app load
   useAuthInitialization()
 
   return (
     <Routes>
       {/* Public Routes */}
-      <Route
-        path="/login"
-        element={
-          <PublicRoute>
-            <LoginPage />
-          </PublicRoute>
-        }
-      />
-      <Route
-        path="/register"
-        element={
-          <PublicRoute>
-            <RegisterPage />
-          </PublicRoute>
-        }
-      />
+      <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+      <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
 
       {/* Protected Routes */}
       <Route
@@ -82,10 +68,18 @@ function App() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
-        <Route path="trade" element={<TradingPage />} />
-        <Route path="trade/:marketId" element={<TradingPage />} />
-        <Route path="pools/:symbolPath" element={<PoolDetailPage />} />
-        <Route path="market/:base/:quote/:settle/:market" element={<MarketPage />} />
+
+        {/* Trade section (CLOB order book) */}
+        <Route path="trade" element={<Navigate to="/trade/spot" replace />} />
+        <Route path="trade/spot" element={<TradingPage />} />
+        <Route path="trade/spot/:pair" element={<MarketPage />} />
+
+        {/* Pools section (AMM) */}
+        <Route path="pools" element={<PoolsListPage />} />
+        <Route path="pools/:pair" element={<PoolDetailPage />} />
+
+        {/* Legacy redirects */}
+        <Route path="market/:base/:quote/:settle/:market" element={<Navigate to="/trade/spot" replace />} />
       </Route>
 
       {/* Catch all */}

@@ -7,13 +7,18 @@ export const Header: React.FC = () => {
   const { logout } = useAuth()
   const { user } = useUser()
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [isTradeOpen, setIsTradeOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const tradeRef = useRef<HTMLDivElement>(null)
 
-  // Close dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsDropdownOpen(false)
+      }
+      if (tradeRef.current && !tradeRef.current.contains(event.target as Node)) {
+        setIsTradeOpen(false)
       }
     }
 
@@ -25,10 +30,8 @@ export const Header: React.FC = () => {
     await logout()
   }
 
-  const navLinks = [
-    { path: '/dashboard', label: 'Dashboard' },
-    { path: '/trade', label: 'Trade' },
-  ]
+  const isTradeActive = location.pathname.startsWith('/trade')
+  const isPoolsActive = location.pathname.startsWith('/pools')
 
   return (
     <header className="bg-bg-secondary border-b border-border-default">
@@ -53,19 +56,67 @@ export const Header: React.FC = () => {
 
             {/* Navigation */}
             <nav className="flex items-center gap-1">
-              {navLinks.map((link) => (
-                <Link
-                  key={link.path}
-                  to={link.path}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    location.pathname === link.path || (link.path === '/trade' && location.pathname.startsWith('/trade'))
+              {/* Dashboard */}
+              <Link
+                to="/dashboard"
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  location.pathname === '/dashboard'
+                    ? 'bg-bg-tertiary text-text-primary'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-bg-tertiary/50'
+                }`}
+              >
+                Dashboard
+              </Link>
+
+              {/* Trade dropdown */}
+              <div className="relative" ref={tradeRef}>
+                <button
+                  onClick={() => setIsTradeOpen(!isTradeOpen)}
+                  className={`flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    isTradeActive
                       ? 'bg-bg-tertiary text-text-primary'
                       : 'text-text-secondary hover:text-text-primary hover:bg-bg-tertiary/50'
                   }`}
                 >
-                  {link.label}
-                </Link>
-              ))}
+                  Trade
+                  <svg
+                    className={`w-3 h-3 transition-transform ${isTradeOpen ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {isTradeOpen && (
+                  <div className="absolute left-0 mt-1 w-40 bg-bg-secondary border border-border-default rounded-lg shadow-card py-1 z-50 animate-fade-in">
+                    <Link
+                      to="/trade/spot"
+                      onClick={() => setIsTradeOpen(false)}
+                      className="block px-4 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-bg-tertiary transition-colors"
+                    >
+                      Spot
+                    </Link>
+                    <div className="px-4 py-2 text-sm text-text-tertiary cursor-not-allowed flex items-center justify-between">
+                      Perp
+                      <span className="text-xs bg-bg-tertiary px-1.5 py-0.5 rounded">Soon</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Pools */}
+              <Link
+                to="/pools"
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  isPoolsActive
+                    ? 'bg-bg-tertiary text-text-primary'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-bg-tertiary/50'
+                }`}
+              >
+                Pools
+              </Link>
             </nav>
           </div>
 
@@ -75,44 +126,30 @@ export const Header: React.FC = () => {
               onClick={() => setIsDropdownOpen(!isDropdownOpen)}
               className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-bg-tertiary transition-colors"
             >
-              {/* Avatar */}
               <div className="w-8 h-8 rounded-full bg-accent-blue/20 flex items-center justify-center">
                 {user?.photo_url ? (
-                  <img
-                    src={user.photo_url}
-                    alt={user.user_name}
-                    className="w-8 h-8 rounded-full"
-                  />
+                  <img src={user.photo_url} alt={user.user_name} className="w-8 h-8 rounded-full" />
                 ) : (
                   <span className="text-sm font-medium text-accent-blue">
                     {user?.user_name?.charAt(0).toUpperCase() || user?.email?.charAt(0).toUpperCase() || 'U'}
                   </span>
                 )}
               </div>
-              
-              {/* Name */}
               <span className="text-sm text-text-primary hidden sm:block">
                 {user?.user_name || user?.email?.split('@')[0] || 'User'}
               </span>
-
-              {/* Chevron */}
               <svg
                 className={`w-4 h-4 text-text-tertiary transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
               >
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </button>
 
-            {/* Dropdown Menu */}
             {isDropdownOpen && (
               <div className="absolute right-0 mt-2 w-48 bg-bg-secondary border border-border-default rounded-lg shadow-card py-1 z-50 animate-fade-in">
                 <div className="px-4 py-2 border-b border-border-default">
-                  <p className="text-sm font-medium text-text-primary truncate">
-                    {user?.user_name || 'User'}
-                  </p>
+                  <p className="text-sm font-medium text-text-primary truncate">{user?.user_name || 'User'}</p>
                   <p className="text-xs text-text-tertiary truncate">{user?.email}</p>
                 </div>
                 <button

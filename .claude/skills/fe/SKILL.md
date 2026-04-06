@@ -249,7 +249,57 @@ const useAuthStore = create<AuthStore>()(
 
 ---
 
-## Routing Architecture (Target)
+## Market Taxonomy — CRITICAL UX GUIDELINE
+
+VegaExchange organizes markets by **user intent**, not by engine type. This is a core UX
+decision that affects routing, navigation, and component structure.
+
+### Three Top-Level Sections
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Header Nav:   [Trade ▾]     [Pools]     [Dashboard]            │
+│                 ├─ Spot                                         │
+│                 └─ Perp (future)                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Section | User Intent | Engine | Balance |
+|---------|------------|--------|---------|
+| **Trade → Spot** | "I want to buy/sell a token" | CLOB (order book) | `account_type='spot'` |
+| **Trade → Perp** | "I want to trade perpetual futures" | CLOB + margin + funding | `account_type='perp'` (future) |
+| **Pools** | "I want to provide liquidity / swap via AMM" | AMM (constant product) | `account_type='spot'` (shared with Trade Spot) |
+
+### Key UX Rules
+
+1. **Trade and Pools are separate top-level nav items** — AMM swap is NOT under "Trade"
+   - Trade = order book (Binance-style, price/quantity/orderbook UI)
+   - Pools = AMM swap (Uniswap-style, from/to/slippage UI)
+   - Even if the same pair (e.g., VEGA/USDT) exists in both, they are different pages
+
+2. **Same pair, different engines** — VegaExchange's unique feature is that the same
+   token pair can trade on multiple engines simultaneously. The frontend should make it
+   easy to compare prices across engines (arbitrage simulation).
+
+3. **Balance is shared within spot** — All Spot trades (CLOB) and AMM swaps use the
+   same `account_type='spot'` balance. Users don't need to "transfer" between spot and AMM.
+   Perp will use a separate `account_type='perp'` balance (future).
+
+4. **Engine type is a backend concept, not a user-facing category** — Users see
+   "Spot" and "Pools", not "CLOB" and "AMM". The engine badge (AMM/CLOB) can appear
+   as a small label for power users but should not be the primary navigation axis.
+
+### DB ↔ Frontend Mapping
+
+| `symbol_configs.market` | `symbol_configs.engine_type` | Frontend Section |
+|------------------------|------------------------------|-----------------|
+| `SPOT` | `0` (AMM) | **Pools** — AMM swap + LP management |
+| `SPOT` | `1` (CLOB) | **Trade → Spot** — order book trading |
+| `PERP` | `1` (CLOB) | **Trade → Perp** — perpetual futures (future) |
+
+---
+
+## Routing Architecture
 
 ### Route Structure
 ```
@@ -258,35 +308,33 @@ const useAuthStore = create<AuthStore>()(
 /register                      → PublicRoute → RegisterPage
 
 /dashboard                     → ProtectedRoute → DashboardPage
-                                  (portfolio, balances, positions summary)
+                                  (portfolio, spot + perp balances, positions)
 
-# Trading (grouped by engine)
+# Trade section (CLOB order book markets)
 /trade/spot/:pair              → ProtectedRoute → SpotTradingPage
                                   (e.g. /trade/spot/BTC-USDT)
-/trade/amm/:pair               → ProtectedRoute → AmmTradingPage
-                                  (e.g. /trade/amm/ETH-USDT)
 /trade/perp/:pair              → ProtectedRoute → PerpTradingPage
-                                  (e.g. /trade/perp/BTC-USDT)
+                                  (e.g. /trade/perp/BTC-USDT) [future]
 
-# Pool management (AMM only)
+# Pools section (AMM liquidity pools)
 /pools                         → ProtectedRoute → PoolsListPage
 /pools/:pair                   → ProtectedRoute → PoolDetailPage
-                                  (e.g. /pools/ETH-USDT)
+                                  (e.g. /pools/VEGA-USDT)
 
-# Market overview
+# Market overview (cross-section directory)
 /markets                       → ProtectedRoute → MarketsPage
-                                  (all markets with Spot/AMM/Perp tabs)
+                                  (tabs: Spot | Pools | Perp)
 
 # Account
 /account/history               → ProtectedRoute → TradeHistoryPage
 ```
 
 ### Route Design Principles
-- Engine type is encoded in the **route path** (`/trade/spot/`), not in the symbol
-- Symbol simplified to `BASE-QUOTE` (e.g., `BTC-USDT`), no settle/market suffix
-- `/trade/:engine/:pair` is the unified trading entry — extensible for future engine types
-- Pool management is a separate top-level section (different UX from trading)
-- `/markets` provides cross-engine overview with tab navigation
+- **Trade = CLOB only** — `/trade/spot/:pair` always shows an order book UI
+- **Pools = AMM only** — `/pools/:pair` always shows a swap + LP UI
+- No `/trade/amm/` route — AMM goes under `/pools/`
+- Symbol simplified to `BASE-QUOTE` in URLs
+- `/markets` provides a directory linking to the correct section per engine type
 
 ### Symbol Format Mapping
 | Context | Format | Example |
@@ -295,8 +343,6 @@ const useAuthStore = create<AuthStore>()(
 | Display | `BASE/QUOTE` | `BTC/USDT` |
 | API query | `BASE-QUOTE-SETTLE-MARKET` | `BTC-USDT-USDT-SPOT` |
 
-Conversion utilities in `src/utils/market.ts` handle all format transformations.
-
 ---
 
 ## Component Architecture
@@ -304,86 +350,74 @@ Conversion utilities in `src/utils/market.ts` handle all format transformations.
 ### Directory Convention
 ```
 src/components/
-├── ui/                    # shadcn/ui components (auto-generated)
-│   ├── button.tsx
-│   ├── dialog.tsx
-│   ├── tabs.tsx
+├── ui/                    # shadcn/ui components (source-owned)
 │   └── ...
 │
-├── common/                # Custom shared components
+├── common/                # Shared components
 │   ├── LoadingSpinner.tsx
 │   ├── ErrorBoundary.tsx
 │   └── ...
 │
 ├── layout/                # App layout
-│   ├── MainLayout.tsx
-│   ├── Header.tsx
-│   └── TradingLayout.tsx  # Shared layout for all trading pages
+│   ├── MainLayout.tsx     # Header + main outlet
+│   ├── Header.tsx         # Nav: Trade (dropdown: Spot/Perp), Pools, Dashboard
+│   └── TradingLayout.tsx  # Shared layout for CLOB trading pages
 │
-├── auth/                  # Authentication
-│   ├── LoginPage.tsx
-│   ├── RegisterPage.tsx
-│   └── ...
+├── auth/                  # Login, Register
 │
-├── dashboard/             # Dashboard
+├── dashboard/             # Portfolio overview
 │   ├── DashboardPage.tsx
-│   ├── PortfolioSummary.tsx
+│   ├── PortfolioSummary.tsx  # Spot + Perp balance breakdown
 │   └── ...
 │
-├── trading/               # Trading components (shared across engines)
-│   ├── common/            # Shared trading UI
+├── trading/               # CLOB trading (Trade section)
+│   ├── common/            # Shared across spot and perp
 │   │   ├── PairSelector.tsx
-│   │   ├── PriceDisplay.tsx
-│   │   └── TradeHistory.tsx
-│   ├── spot/              # CLOB-specific
+│   │   ├── TradeHistory.tsx
+│   │   └── PriceDisplay.tsx
+│   ├── spot/              # Spot CLOB
 │   │   ├── SpotTradingPage.tsx
 │   │   ├── OrderForm.tsx
 │   │   └── OrderBook.tsx
-│   ├── amm/               # AMM-specific
-│   │   ├── AmmTradingPage.tsx
-│   │   └── SwapPanel.tsx
-│   └── perp/              # Perpetual-specific
+│   └── perp/              # Perp CLOB (future)
 │       ├── PerpTradingPage.tsx
 │       ├── PositionPanel.tsx
 │       ├── MarginControl.tsx
 │       └── FundingRateBar.tsx
 │
-├── pool/                  # AMM pool management
-│   ├── PoolsListPage.tsx
-│   ├── PoolDetailPage.tsx
+├── pool/                  # AMM pools (Pools section)
+│   ├── PoolsListPage.tsx  # All AMM pools overview
+│   ├── PoolDetailPage.tsx # Swap + LP + charts
 │   └── ...
 │
-├── market/                # Market overview
-│   ├── MarketsPage.tsx
-│   └── ...
+├── market/                # Market directory (cross-section)
+│   └── MarketsPage.tsx    # Tabs: Spot | Pools | Perp
 │
-├── charts/                # Chart components
+├── charts/                # Chart components (shared)
 │   ├── CandlestickChart.tsx
 │   ├── PriceLineChart.tsx
 │   ├── VolumeBarChart.tsx
-│   ├── DepthChart.tsx     # Order book depth visualization
+│   ├── DepthChart.tsx
 │   └── ...
 │
-└── account/               # Account pages
-    ├── TradeHistoryPage.tsx
-    └── ...
+└── account/               # Trade history, (future: transfers)
+    └── TradeHistoryPage.tsx
 ```
 
 ### Component Design Principles
-1. **Page components** — Route-level, handles data fetching (TanStack Query), layout composition
+1. **Page components** — Route-level, data fetching, layout composition
 2. **Feature components** — Domain logic, connected to stores/queries
-3. **UI components** — Pure presentational, props-driven, reusable
-4. **Composition over inheritance** — Use children/render props, not class hierarchies
+3. **UI components** — Pure presentational, props-driven
+4. **Composition over inheritance** — children/render props
 
 ### Shared Trading Layout
-All trading pages (`/trade/spot/:pair`, `/trade/amm/:pair`, `/trade/perp/:pair`) share a
-common `TradingLayout` with:
-- Header with pair selector + engine switcher
-- Chart area (left/center)
+Spot and Perp trading pages share `TradingLayout`:
+- Header with pair selector
+- Chart area (center)
 - Trade panel (right sidebar)
-- Trade history (bottom)
+- Order/trade history (bottom tabs)
 
-Engine-specific content is rendered via children/slots.
+Engine-specific content (order form, position panel) rendered via children.
 
 ---
 

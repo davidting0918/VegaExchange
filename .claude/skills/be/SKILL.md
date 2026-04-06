@@ -276,6 +276,38 @@ Refer to [domain-knowledge.md](domain-knowledge.md) for:
 | Environment | `backend/core/environment.py` |
 | Backend .env | `backend/.env` |
 
+## Market Taxonomy & Balance Model
+
+VegaExchange organizes markets by **user intent** (Trade vs Pools), not by engine type.
+
+### Market Classification
+```
+symbol_configs.market  ×  symbol_configs.engine_type  →  Frontend Section
+─────────────────────────────────────────────────────────────────────
+SPOT                      0 (AMM)                        Pools (swap + LP)
+SPOT                      1 (CLOB)                       Trade → Spot (order book)
+PERP                      1 (CLOB)                       Trade → Perp (futures)
+```
+
+### Balance Model
+```
+user_balances.account_type:
+├── 'spot'   — shared by ALL Spot trades (CLOB) and AMM swaps
+└── 'perp'   — independent margin account for perpetual futures (future)
+```
+
+- Same pair (e.g., VEGA/USDT) can exist on AMM and CLOB simultaneously
+- Spot CLOB and AMM swap deduct from the **same** spot balance
+- Perp will use separate balance (future: transfer between spot ↔ perp)
+
+### When Creating New Symbols
+- `market='SPOT', engine_type=0` → AMM pool (requires initial reserves)
+- `market='SPOT', engine_type=1` → CLOB order book
+- `market='PERP', engine_type=1` → Perpetual futures (future)
+- Always set `settle` to the settlement currency (usually quote asset)
+
+---
+
 ## Current Architecture Awareness
 
 ### Model-Router-Service Pattern

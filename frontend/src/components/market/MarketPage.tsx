@@ -6,7 +6,7 @@ import { Card, CardHeader, Button, LoadingSpinner } from '../common'
 import { TradeHistory } from '../trading/TradeHistory'
 import { CandlestickChart, OrderbookChart } from '../charts'
 import { marketService, tradeService } from '../../api'
-import { formatCrypto, formatNumber, parseNumericInput, isValidAmount, buildSymbolFromPath } from '../../utils'
+import { formatCrypto, formatNumber, parseNumericInput, isValidAmount, buildSymbolFromPath, parsePairParam } from '../../utils'
 import { useWebSocket } from '../../hooks/useWebSocket'
 import type { TradeSide, OrderType, OrderbookLevel, Order, Trade, Symbol as SymbolType, CandlestickData as AppCandlestickData, OrderStatus } from '../../types'
 import type { CandlestickData } from 'lightweight-charts'
@@ -25,19 +25,16 @@ const WS_SIDE_MAP: Record<number, TradeSide> = {
 }
 
 export const MarketPage: React.FC = () => {
-  const { base, quote, settle, market } = useParams<{
-    base: string
-    quote: string
-    settle: string
-    market: string
-  }>()
+  const { pair } = useParams<{ pair: string }>()
   const navigate = useNavigate()
-  
-  // Build symbol from URL path components
+
+  // Build symbol from simplified URL param (e.g. "BTC-USDT" → "BTC/USDT-USDT:SPOT")
   const decodedSymbol = useMemo(() => {
-    if (!base || !quote || !settle || !market) return ''
-    return buildSymbolFromPath({ base, quote, settle, market })
-  }, [base, quote, settle, market])
+    if (!pair) return ''
+    const components = parsePairParam(pair, 'SPOT')
+    if (!components) return ''
+    return buildSymbolFromPath(components)
+  }, [pair])
 
   const {
     symbols,
@@ -491,7 +488,7 @@ export const MarketPage: React.FC = () => {
 
   // Handle back navigation
   const handleBack = () => {
-    navigate('/trade')
+    navigate('/trade/spot')
   }
 
   // Set market order price
