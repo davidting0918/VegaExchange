@@ -2,9 +2,9 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import BigNumber from 'bignumber.js'
 import { useTrading, useUser } from '../../hooks'
-import { Card, CardHeader, Button, LoadingSpinner } from '../common'
-import { TradeHistory } from '../trading/TradeHistory'
+import { Button, LoadingSpinner } from '../common'
 import { CandlestickChart, OrderbookChart } from '../charts'
+import { MarketPairsSidebar } from './MarketPairsSidebar'
 import { marketService, tradeService } from '../../api'
 import { formatCrypto, formatNumber, parseNumericInput, isValidAmount, buildSymbolFromPath, parsePairParam } from '../../utils'
 import { useWebSocket } from '../../hooks/useWebSocket'
@@ -71,7 +71,7 @@ export const MarketPage: React.FC = () => {
   const [orderType, setOrderType] = useState<OrderType>('limit')
   const [price, setPrice] = useState('')
   const [quantity, setQuantity] = useState('')
-  const [isPlacingOrder, setIsPlacingOrder] = useState(false)
+  const [, setIsPlacingOrder] = useState(false)
   const [showMarketConfirm, setShowMarketConfirm] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -485,11 +485,6 @@ export const MarketPage: React.FC = () => {
     }
   }
 
-  // Set market order price
-  const handleSetMarketPrice = () => {
-    setPrice(orderSide === 'buy' ? bestAsk : bestBid)
-  }
-
   if (symbols.length === 0 && !symbolInfo) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -500,442 +495,149 @@ export const MarketPage: React.FC = () => {
 
   if (!symbolInfo) {
     return (
-      <div className="space-y-6 animate-fade-in">
-        <Card className="text-center py-12">
-          <p className="text-text-secondary">Market not found</p>
-        </Card>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <p className="text-text-secondary">Market not found</p>
+      </div>
+    )
+  }
+
+  // Shared order form renderer (used for both buy and sell sides)
+  const renderOrderForm = (side: TradeSide) => {
+    const isBuy = side === 'buy'
+    const availBalance = isBuy ? quoteBalance : baseBalance
+    const availAsset = isBuy ? symbolInfo.quote : symbolInfo.base
+
+    const setQtyPercent = (pct: number) => {
+      if (isBuy) {
+        if (price && parseFloat(price) > 0) {
+          const maxQty = (parseFloat(availBalance) * pct) / 100 / parseFloat(price)
+          setQuantity(maxQty.toFixed(8))
+        }
+      } else {
+        const qty = (parseFloat(availBalance) * pct) / 100
+        setQuantity(qty.toFixed(8))
+      }
+      setOrderSide(side)
+    }
+
+    return (
+      <div className="flex-1 p-3">
+        {/* Available balance */}
+        <div className="flex justify-between text-xs text-text-tertiary mb-2">
+          <span>Avail</span>
+          <span className="font-mono">{formatCrypto(availBalance)} {availAsset}</span>
+        </div>
+
+        {/* Price Input (limit only) */}
+        {orderType === 'limit' && (
+          <div className="mb-2">
+            <div className="relative">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-text-tertiary">Price</span>
+              <input
+                type="text"
+                value={price}
+                onChange={(e) => { setPrice(parseNumericInput(e.target.value)); setOrderSide(side) }}
+                placeholder="0.00"
+                className="w-full pl-12 pr-14 py-2 bg-bg-tertiary border border-border-default rounded text-xs text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+              />
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-text-tertiary">{symbolInfo.quote}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Quantity Input */}
+        <div className="mb-2">
+          <div className="relative">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-text-tertiary">Qty</span>
+            <input
+              type="text"
+              value={side === orderSide ? quantity : ''}
+              onChange={(e) => { setQuantity(parseNumericInput(e.target.value)); setOrderSide(side) }}
+              placeholder="0.00"
+              className="w-full pl-10 pr-14 py-2 bg-bg-tertiary border border-border-default rounded text-xs text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+            />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-text-tertiary">{symbolInfo.base}</span>
+          </div>
+        </div>
+
+        {/* Percentage buttons */}
+        <div className="flex gap-1 mb-2">
+          {[25, 50, 75, 100].map(pct => (
+            <button
+              key={pct}
+              onClick={() => setQtyPercent(pct)}
+              className="flex-1 py-1 text-xs text-text-tertiary bg-bg-tertiary rounded hover:text-text-secondary hover:bg-bg-hover"
+            >
+              {pct === 100 ? 'Max' : `${pct}%`}
+            </button>
+          ))}
+        </div>
+
+        {/* Total */}
+        {orderType === 'limit' && price && (side === orderSide) && quantity && (
+          <div className="flex justify-between text-xs text-text-tertiary mb-2">
+            <span>Total</span>
+            <span className="font-mono">{formatNumber(orderTotal, 6)} {symbolInfo.quote}</span>
+          </div>
+        )}
+
+        {/* Submit */}
+        <button
+          onClick={() => { setOrderSide(side); setTimeout(handlePlaceOrder, 0) }}
+          disabled={insufficientBalance || !quantity || (orderType === 'limit' && !price)}
+          className={`w-full py-2 rounded text-xs font-medium text-white disabled:opacity-40 ${
+            isBuy ? 'bg-accent-green hover:bg-accent-green/80' : 'bg-accent-red hover:bg-accent-red/80'
+          }`}
+        >
+          {isBuy ? `Buy ${symbolInfo.base}` : `Sell ${symbolInfo.base}`}
+        </button>
       </div>
     )
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      {/* Toast notification */}
+    <div className="animate-fade-in -m-6">
+      {/* Toast */}
       {toast && (
         <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium animate-fade-in ${
-          toast.type === 'success'
-            ? 'bg-accent-green/90 text-white'
-            : 'bg-accent-blue/90 text-white'
+          toast.type === 'success' ? 'bg-accent-green/90 text-white' : 'bg-accent-blue/90 text-white'
         }`}>
           {toast.message}
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary">
-            {symbolInfo.base}/{symbolInfo.quote}
-          </h1>
-          <p className="text-text-secondary">Order Book Market</p>
+      {/* Symbol Bar */}
+      <div className="flex items-center gap-6 px-4 py-2 border-b border-border-default bg-bg-secondary">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-text-primary">{symbolInfo.base}/{symbolInfo.quote}</span>
+          <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-accent-green' : 'bg-text-tertiary'}`} />
         </div>
-        <div className="text-right">
-          <div className="flex items-center justify-end gap-2 mb-1">
-            <span
-              className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-accent-green' : 'bg-text-tertiary'}`}
-              title={wsConnected ? 'Live' : 'Polling'}
-            />
-            <span className="text-xs text-text-tertiary">{wsConnected ? 'Live' : 'Polling'}</span>
-          </div>
-          <p className="text-sm text-text-tertiary">Last Price</p>
-          <p className="text-2xl font-bold text-text-primary">
-            {formatNumber(midPrice, 6)} {symbolInfo.quote}
-          </p>
-          <div className="flex items-center justify-end gap-4 mt-1 text-sm">
-            <span className="text-accent-green">Bid: {formatNumber(parseFloat(bestBid), 6)}</span>
-            <span className="text-accent-red">Ask: {formatNumber(parseFloat(bestAsk), 6)}</span>
-          </div>
+        <span className="text-sm font-mono text-text-primary">{formatNumber(midPrice, 6)}</span>
+        <div className="flex items-center gap-4 text-xs text-text-tertiary">
+          <span>Bid: <span className="text-accent-green font-mono">{formatNumber(parseFloat(bestBid), 6)}</span></span>
+          <span>Ask: <span className="text-accent-red font-mono">{formatNumber(parseFloat(bestAsk), 6)}</span></span>
         </div>
       </div>
 
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Chart Section */}
-        <div className="lg:col-span-3 space-y-6">
-          {/* Price Chart */}
-          <Card>
-            <div className="flex items-center justify-between px-6 pt-4 pb-2">
-              <h3 className="text-lg font-semibold text-text-primary">Price Chart</h3>
-              <div className="flex gap-1">
-                {['1m', '5m', '15m', '1h', '4h', '1d'].map((tf) => (
-                  <button
-                    key={tf}
-                    onClick={() => setKlineInterval(tf)}
-                    className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                      klineInterval === tf
-                        ? 'bg-accent-blue text-white'
-                        : 'text-text-secondary hover:text-text-primary hover:bg-bg-tertiary'
-                    }`}
-                  >
-                    {tf.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="pt-2">
-              {klineLoading && klineData.length === 0 ? (
-                <div className="flex items-center justify-center" style={{ height: 350 }}>
-                  <LoadingSpinner />
-                </div>
-              ) : klineData.length === 0 ? (
-                <div className="flex items-center justify-center text-text-secondary" style={{ height: 350 }}>
-                  No trade data available
-                </div>
-              ) : (
-                <CandlestickChart data={klineData} height={350} />
-              )}
-            </div>
-          </Card>
-
-          {/* Order Form and Recent Trades Row */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Order Form */}
-            <Card>
-              <CardHeader title="Place Order" />
-              
-              {/* Buy/Sell Tabs */}
-              <div className="flex gap-2 mb-4">
-                <button
-                  onClick={() => { setOrderSide('buy'); setShowMarketConfirm(false) }}
-                  className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                    orderSide === 'buy'
-                      ? 'bg-accent-green text-white'
-                      : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
-                  }`}
-                >
-                  Buy
-                </button>
-                <button
-                  onClick={() => { setOrderSide('sell'); setShowMarketConfirm(false) }}
-                  className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                    orderSide === 'sell'
-                      ? 'bg-accent-red text-white'
-                      : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
-                  }`}
-                >
-                  Sell
-                </button>
-              </div>
-
-              {/* Order Type Tabs */}
-              <div className="flex gap-2 mb-4">
-                <button
-                  onClick={() => { setOrderType('limit'); setShowMarketConfirm(false) }}
-                  className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    orderType === 'limit'
-                      ? 'bg-accent-blue text-white'
-                      : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
-                  }`}
-                >
-                  Limit
-                </button>
-                <button
-                  onClick={() => { setOrderType('market'); setShowMarketConfirm(false) }}
-                  className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    orderType === 'market'
-                      ? 'bg-accent-blue text-white'
-                      : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
-                  }`}
-                >
-                  Market
-                </button>
-              </div>
-
-              {/* Balance Display */}
-              <div className="flex justify-between text-sm text-text-secondary mb-4">
-                <span>Available:</span>
-                <span className="font-mono">
-                  {orderSide === 'buy'
-                    ? `${formatCrypto(quoteBalance)} ${symbolInfo.quote}`
-                    : `${formatCrypto(baseBalance)} ${symbolInfo.base}`}
-                </span>
-              </div>
-
-              {/* Price Input (for limit orders) */}
-              {orderType === 'limit' && (
-                <div className="mb-4">
-                  <div className="flex justify-between items-center mb-1">
-                    <label className="text-sm text-text-secondary">Price</label>
-                    <button
-                      onClick={handleSetMarketPrice}
-                      className="text-xs text-accent-blue hover:underline"
-                    >
-                      Market
-                    </button>
-                  </div>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={price}
-                      onChange={(e) => setPrice(parseNumericInput(e.target.value))}
-                      placeholder="0.00"
-                      className="w-full px-4 py-3 bg-bg-tertiary border border-border-default rounded-lg text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-blue font-mono"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-text-secondary">
-                      {symbolInfo.quote}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Quantity Input */}
-              <div className="mb-4">
-                <div className="flex justify-between items-center mb-1">
-                  <label className="text-sm text-text-secondary">Quantity</label>
-                  <button
-                    onClick={() => {
-                      if (orderSide === 'sell') {
-                        setQuantity(baseBalance)
-                      } else if (price && parseFloat(price) > 0) {
-                        const maxQty = parseFloat(quoteBalance) / parseFloat(price)
-                        setQuantity(String(maxQty.toFixed(8)))
-                      }
-                    }}
-                    className="text-xs text-accent-blue hover:underline"
-                  >
-                    Max
-                  </button>
-                </div>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={quantity}
-                    onChange={(e) => setQuantity(parseNumericInput(e.target.value))}
-                    placeholder="0.00"
-                    className="w-full px-4 py-3 bg-bg-tertiary border border-border-default rounded-lg text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-blue font-mono"
-                  />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-text-secondary">
-                    {symbolInfo.base}
-                  </span>
-                </div>
-              </div>
-
-              {/* Order Total */}
-              {orderType === 'limit' && price && quantity && (
-                <div className="mb-4 p-3 bg-bg-tertiary rounded-lg">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-text-secondary">Total</span>
-                    <span className="font-mono text-text-primary">
-                      {formatNumber(orderTotal, 6)} {symbolInfo.quote}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Insufficient balance warning */}
-              {insufficientBalance && (
-                <div className="mb-4 p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg text-accent-red text-sm">
-                  Insufficient {orderSide === 'buy' ? symbolInfo.quote : symbolInfo.base} balance
-                </div>
-              )}
-
-              {/* Market order confirmation */}
-              {showMarketConfirm && (
-                <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-yellow-400 text-sm">
-                  <p className="font-medium mb-1">Market Order Warning</p>
-                  <p className="text-xs">Market orders execute at the best available price, which may differ significantly from the last price. Click again to confirm.</p>
-                </div>
-              )}
-
-              {/* Error/Success Messages */}
-              {error && (
-                <div className="mb-4 p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg text-accent-red text-sm">
-                  {error}
-                </div>
-              )}
-              {successMessage && (
-                <div className="mb-4 p-3 bg-accent-green/10 border border-accent-green/20 rounded-lg text-accent-green text-sm">
-                  {successMessage}
-                </div>
-              )}
-
-              {/* Submit Button */}
-              <Button
-                fullWidth
-                size="lg"
-                variant={orderSide === 'buy' ? 'success' : 'danger'}
-                onClick={handlePlaceOrder}
-                isLoading={isPlacingOrder}
-                disabled={insufficientBalance || !quantity || (orderType === 'limit' && !price)}
-              >
-                {showMarketConfirm
-                  ? 'Confirm Market Order'
-                  : orderSide === 'buy'
-                    ? `Buy ${symbolInfo.base}`
-                    : `Sell ${symbolInfo.base}`}
-              </Button>
-            </Card>
-
-            {/* Recent Trades */}
-            <TradeHistory
-              trades={localTrades}
-              isLoading={tradesLoading}
-              baseToken={symbolInfo.base}
-              quoteToken={symbolInfo.quote}
-              symbolKey={decodedSymbol}
-            />
-          </div>
-
-          {/* Orders Panel */}
-          <Card>
-            <div className="flex items-center justify-between px-6 pt-4 pb-2">
-              <div className="flex gap-4">
-                <button
-                  onClick={() => setOrdersTab('open')}
-                  className={`text-sm font-medium pb-2 border-b-2 transition-colors ${
-                    ordersTab === 'open'
-                      ? 'text-text-primary border-accent-blue'
-                      : 'text-text-secondary border-transparent hover:text-text-primary'
-                  }`}
-                >
-                  Open Orders ({openOrders.length})
-                </button>
-                <button
-                  onClick={() => setOrdersTab('history')}
-                  className={`text-sm font-medium pb-2 border-b-2 transition-colors ${
-                    ordersTab === 'history'
-                      ? 'text-text-primary border-accent-blue'
-                      : 'text-text-secondary border-transparent hover:text-text-primary'
-                  }`}
-                >
-                  Order History
-                </button>
-              </div>
-              {ordersTab === 'open' && openOrders.length > 0 && (
-                <Button size="sm" variant="ghost" onClick={handleCancelAll}>
-                  Cancel All
-                </Button>
-              )}
-            </div>
-
-            {ordersLoading && openOrders.length === 0 && orderHistory.length === 0 ? (
-              <div className="flex items-center justify-center py-8">
-                <LoadingSpinner />
-              </div>
-            ) : ordersTab === 'open' ? (
-              openOrders.length === 0 ? (
-                <div className="text-center py-8 text-text-secondary">No open orders</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="text-left text-xs text-text-tertiary uppercase tracking-wide border-b border-border-default">
-                        <th className="pb-3 pl-6 font-medium">Time</th>
-                        <th className="pb-3 font-medium">Side</th>
-                        <th className="pb-3 font-medium">Type</th>
-                        <th className="pb-3 font-medium">Price</th>
-                        <th className="pb-3 font-medium">Quantity</th>
-                        <th className="pb-3 font-medium">Filled</th>
-                        <th className="pb-3 font-medium">Status</th>
-                        <th className="pb-3 pr-6 font-medium text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border-default">
-                      {openOrders.map((order) => (
-                        <tr key={order.order_id} className="text-sm">
-                          <td className="py-3 pl-6 text-text-secondary text-xs">
-                            {new Date(order.created_at).toLocaleTimeString()}
-                          </td>
-                          <td className={`py-3 font-medium ${order.side === 'buy' ? 'text-accent-green' : 'text-accent-red'}`}>
-                            {order.side.toUpperCase()}
-                          </td>
-                          <td className="py-3 text-text-secondary">{order.order_type.toUpperCase()}</td>
-                          <td className="py-3 text-text-primary font-mono">{formatCrypto(order.price)}</td>
-                          <td className="py-3 text-text-primary font-mono">{formatCrypto(order.quantity)}</td>
-                          <td className="py-3 font-mono">
-                            <div className="flex items-center gap-2">
-                              <span className="text-text-secondary">{formatCrypto(order.filled_quantity)}</span>
-                              <div className="w-16 h-1.5 bg-bg-tertiary rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-accent-blue rounded-full"
-                                  style={{
-                                    width: `${new BigNumber(order.filled_quantity).div(new BigNumber(order.quantity)).times(100).toNumber()}%`,
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          </td>
-                          <td className="py-3">
-                            <span className={`text-xs px-2 py-0.5 rounded ${
-                              order.status === 'partial' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-accent-blue/10 text-accent-blue'
-                            }`}>
-                              {order.status.toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="py-3 pr-6 text-right">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleCancelOrder(order.order_id)}
-                              isLoading={cancellingOrders.has(order.order_id)}
-                            >
-                              Cancel
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )
-            ) : (
-              orderHistory.length === 0 ? (
-                <div className="text-center py-8 text-text-secondary">No order history</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="text-left text-xs text-text-tertiary uppercase tracking-wide border-b border-border-default">
-                        <th className="pb-3 pl-6 font-medium">Time</th>
-                        <th className="pb-3 font-medium">Side</th>
-                        <th className="pb-3 font-medium">Type</th>
-                        <th className="pb-3 font-medium">Price</th>
-                        <th className="pb-3 font-medium">Quantity</th>
-                        <th className="pb-3 font-medium">Filled</th>
-                        <th className="pb-3 pr-6 font-medium">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border-default">
-                      {orderHistory.map((order) => (
-                        <tr key={order.order_id} className="text-sm">
-                          <td className="py-3 pl-6 text-text-secondary text-xs">
-                            {new Date(order.created_at).toLocaleTimeString()}
-                          </td>
-                          <td className={`py-3 font-medium ${order.side === 'buy' ? 'text-accent-green' : 'text-accent-red'}`}>
-                            {order.side.toUpperCase()}
-                          </td>
-                          <td className="py-3 text-text-secondary">{order.order_type.toUpperCase()}</td>
-                          <td className="py-3 text-text-primary font-mono">{formatCrypto(order.price)}</td>
-                          <td className="py-3 text-text-primary font-mono">{formatCrypto(order.quantity)}</td>
-                          <td className="py-3 text-text-secondary font-mono">{formatCrypto(order.filled_quantity)}</td>
-                          <td className="py-3 pr-6">
-                            <span className={`text-xs px-2 py-0.5 rounded ${
-                              order.status === 'filled' ? 'bg-accent-green/10 text-accent-green' : 'bg-text-tertiary/10 text-text-tertiary'
-                            }`}>
-                              {order.status.toUpperCase()}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )
-            )}
-          </Card>
+      {/* Error/Success messages */}
+      {(error || successMessage || showMarketConfirm) && (
+        <div className="px-4 py-1 border-b border-border-default">
+          {error && <div className="py-1 text-xs text-accent-red">{error}</div>}
+          {successMessage && <div className="py-1 text-xs text-accent-green">{successMessage}</div>}
+          {showMarketConfirm && <div className="py-1 text-xs text-yellow-400">Market order: click Buy/Sell again to confirm</div>}
         </div>
+      )}
 
-        {/* Orderbook Sidebar */}
-        <div className="lg:col-span-1">
-          <Card className="h-[700px]">
-            <CardHeader
-              title="Order Book"
-              subtitle={`${symbolInfo.base}/${symbolInfo.quote}`}
-            />
+      {/* 3-Column Layout */}
+      <div className="flex" style={{ height: 'calc(100vh - 160px)' }}>
+        {/* LEFT: Order Book */}
+        <div className="w-[260px] flex-shrink-0 border-r border-border-default overflow-hidden flex flex-col">
+          <div className="px-3 py-1.5 text-xs text-text-tertiary font-medium border-b border-border-default">
+            Order Book
+          </div>
+          <div className="flex-1 overflow-hidden">
             {orderbookLoading ? (
-              <div className="flex items-center justify-center h-full">
-                <LoadingSpinner />
-              </div>
+              <div className="flex items-center justify-center h-full"><LoadingSpinner /></div>
             ) : (
               <OrderbookChart
                 bids={orderbook.bids}
@@ -944,7 +646,189 @@ export const MarketPage: React.FC = () => {
                 onPriceClick={handlePriceClick}
               />
             )}
-          </Card>
+          </div>
+        </div>
+
+        {/* CENTER: Chart + Order Form */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          {/* Interval selector */}
+          <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-default">
+            {['1m', '5m', '15m', '1h', '4h', '1d'].map((tf) => (
+              <button
+                key={tf}
+                onClick={() => setKlineInterval(tf)}
+                className={`px-2 py-0.5 rounded text-xs transition-colors ${
+                  klineInterval === tf
+                    ? 'text-text-primary font-medium'
+                    : 'text-text-tertiary hover:text-text-secondary'
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
+
+          {/* Chart */}
+          <div className="flex-1 min-h-0">
+            {klineLoading && klineData.length === 0 ? (
+              <div className="flex items-center justify-center h-full"><LoadingSpinner /></div>
+            ) : klineData.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-text-tertiary text-sm">No trade data</div>
+            ) : (
+              <CandlestickChart data={klineData} height={400} />
+            )}
+          </div>
+
+          {/* Order Form — side by side Buy/Sell */}
+          <div className="border-t border-border-default">
+            {/* Order type tabs */}
+            <div className="flex gap-3 px-3 py-1.5 border-b border-border-default">
+              {(['limit', 'market'] as OrderType[]).map(t => (
+                <button
+                  key={t}
+                  onClick={() => { setOrderType(t); setShowMarketConfirm(false) }}
+                  className={`text-xs pb-1 border-b ${
+                    orderType === t
+                      ? 'text-text-primary border-text-primary font-medium'
+                      : 'text-text-tertiary border-transparent hover:text-text-secondary'
+                  }`}
+                >
+                  {t.charAt(0).toUpperCase() + t.slice(1)}
+                </button>
+              ))}
+            </div>
+
+            {/* Buy + Sell side by side */}
+            <div className="flex divide-x divide-border-default">
+              {renderOrderForm('buy')}
+              {renderOrderForm('sell')}
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT: Market Pairs + Recent Trades */}
+        <div className="w-[280px] flex-shrink-0 border-l border-border-default overflow-hidden">
+          <MarketPairsSidebar
+            currentSymbol={decodedSymbol}
+            trades={localTrades}
+            tradesLoading={tradesLoading}
+          />
+        </div>
+      </div>
+
+      {/* Bottom: Orders Panel */}
+      <div className="border-t border-border-default">
+        <div className="flex items-center justify-between px-4 py-1.5 border-b border-border-default">
+          <div className="flex gap-4">
+            <button
+              onClick={() => setOrdersTab('open')}
+              className={`text-xs pb-1 border-b ${
+                ordersTab === 'open'
+                  ? 'text-text-primary border-accent-blue font-medium'
+                  : 'text-text-tertiary border-transparent hover:text-text-secondary'
+              }`}
+            >
+              Open Orders ({openOrders.length})
+            </button>
+            <button
+              onClick={() => setOrdersTab('history')}
+              className={`text-xs pb-1 border-b ${
+                ordersTab === 'history'
+                  ? 'text-text-primary border-accent-blue font-medium'
+                  : 'text-text-tertiary border-transparent hover:text-text-secondary'
+              }`}
+            >
+              Order History
+            </button>
+          </div>
+          {ordersTab === 'open' && openOrders.length > 0 && (
+            <button onClick={handleCancelAll} className="text-xs text-text-tertiary hover:text-text-primary">
+              Cancel All
+            </button>
+          )}
+        </div>
+
+        <div className="max-h-[200px] overflow-y-auto">
+          {ordersLoading && openOrders.length === 0 && orderHistory.length === 0 ? (
+            <div className="flex items-center justify-center py-6"><LoadingSpinner /></div>
+          ) : ordersTab === 'open' ? (
+            openOrders.length === 0 ? (
+              <div className="text-center py-6 text-text-tertiary text-xs">No open orders</div>
+            ) : (
+              <table className="w-full">
+                <thead>
+                  <tr className="text-left text-xs text-text-tertiary border-b border-border-default">
+                    <th className="py-1.5 pl-4 font-medium">Time</th>
+                    <th className="py-1.5 font-medium">Side</th>
+                    <th className="py-1.5 font-medium">Type</th>
+                    <th className="py-1.5 font-medium">Price</th>
+                    <th className="py-1.5 font-medium">Qty</th>
+                    <th className="py-1.5 font-medium">Filled</th>
+                    <th className="py-1.5 font-medium">Status</th>
+                    <th className="py-1.5 pr-4 font-medium text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-default">
+                  {openOrders.map((order) => (
+                    <tr key={order.order_id} className="text-xs">
+                      <td className="py-1.5 pl-4 text-text-tertiary">{new Date(order.created_at).toLocaleTimeString()}</td>
+                      <td className={`py-1.5 font-medium ${order.side === 'buy' ? 'text-accent-green' : 'text-accent-red'}`}>{order.side.toUpperCase()}</td>
+                      <td className="py-1.5 text-text-secondary">{order.order_type.toUpperCase()}</td>
+                      <td className="py-1.5 text-text-primary font-mono">{formatCrypto(order.price)}</td>
+                      <td className="py-1.5 text-text-primary font-mono">{formatCrypto(order.quantity)}</td>
+                      <td className="py-1.5 font-mono">
+                        <div className="flex items-center gap-1">
+                          <span className="text-text-secondary">{formatCrypto(order.filled_quantity)}</span>
+                          <div className="w-10 h-1 bg-bg-tertiary rounded-full overflow-hidden">
+                            <div className="h-full bg-accent-blue rounded-full" style={{ width: `${new BigNumber(order.filled_quantity).div(new BigNumber(order.quantity)).times(100).toNumber()}%` }} />
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-1.5">
+                        <span className={`text-xs px-1.5 py-0.5 rounded ${order.status === 'partial' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-accent-blue/10 text-accent-blue'}`}>{order.status.toUpperCase()}</span>
+                      </td>
+                      <td className="py-1.5 pr-4 text-right">
+                        <Button size="sm" variant="ghost" onClick={() => handleCancelOrder(order.order_id)} isLoading={cancellingOrders.has(order.order_id)}>Cancel</Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          ) : (
+            orderHistory.length === 0 ? (
+              <div className="text-center py-6 text-text-tertiary text-xs">No order history</div>
+            ) : (
+              <table className="w-full">
+                <thead>
+                  <tr className="text-left text-xs text-text-tertiary border-b border-border-default">
+                    <th className="py-1.5 pl-4 font-medium">Time</th>
+                    <th className="py-1.5 font-medium">Side</th>
+                    <th className="py-1.5 font-medium">Type</th>
+                    <th className="py-1.5 font-medium">Price</th>
+                    <th className="py-1.5 font-medium">Qty</th>
+                    <th className="py-1.5 font-medium">Filled</th>
+                    <th className="py-1.5 pr-4 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-default">
+                  {orderHistory.map((order) => (
+                    <tr key={order.order_id} className="text-xs">
+                      <td className="py-1.5 pl-4 text-text-tertiary">{new Date(order.created_at).toLocaleTimeString()}</td>
+                      <td className={`py-1.5 font-medium ${order.side === 'buy' ? 'text-accent-green' : 'text-accent-red'}`}>{order.side.toUpperCase()}</td>
+                      <td className="py-1.5 text-text-secondary">{order.order_type.toUpperCase()}</td>
+                      <td className="py-1.5 text-text-primary font-mono">{formatCrypto(order.price)}</td>
+                      <td className="py-1.5 text-text-primary font-mono">{formatCrypto(order.quantity)}</td>
+                      <td className="py-1.5 text-text-secondary font-mono">{formatCrypto(order.filled_quantity)}</td>
+                      <td className="py-1.5 pr-4">
+                        <span className={`text-xs px-1.5 py-0.5 rounded ${order.status === 'filled' ? 'bg-accent-green/10 text-accent-green' : 'bg-text-tertiary/10 text-text-tertiary'}`}>{order.status.toUpperCase()}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          )}
         </div>
       </div>
     </div>
