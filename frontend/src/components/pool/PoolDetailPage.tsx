@@ -9,18 +9,23 @@ import { AddLiquidityPanel } from './AddLiquidityPanel'
 import { PoolChartSection } from './PoolChartSection'
 import { PoolStatsSidebar } from './PoolStatsSidebar'
 import { LPPieChart } from '../charts'
-import { formatCrypto, formatNumber, formatPercentage, buildSymbolFromPath, parsePoolUrlPath } from '../../utils'
+import { formatCrypto, formatNumber, formatPercentage, buildSymbolFromPath, parsePoolUrlPath, parsePairParam } from '../../utils'
 import type { TradeSide } from '../../types'
 
 export const PoolDetailPage: React.FC = () => {
-  const { symbolPath } = useParams<{ symbolPath: string }>()
+  const { pair } = useParams<{ pair: string }>()
   const navigate = useNavigate()
 
   const decodedSymbol = useMemo(() => {
-    const components = symbolPath ? parsePoolUrlPath(symbolPath) : null
-    if (!components) return ''
-    return buildSymbolFromPath(components)
-  }, [symbolPath])
+    if (!pair) return ''
+    // Try new simplified format first (e.g. "VEGA-USDT")
+    const simplified = parsePairParam(pair, 'SPOT')
+    if (simplified) return buildSymbolFromPath(simplified)
+    // Fallback: old 4-segment format (e.g. "AMM-USDT-USDT-SPOT")
+    const legacy = parsePoolUrlPath(pair)
+    if (legacy) return buildSymbolFromPath(legacy)
+    return ''
+  }, [pair])
 
   const {
     poolInfo,
@@ -141,7 +146,7 @@ export const PoolDetailPage: React.FC = () => {
   )
 
   const handleBack = () => {
-    navigate('/trade')
+    navigate('/pools')
   }
 
   if (isLoading && !poolInfo) {
@@ -177,7 +182,7 @@ export const PoolDetailPage: React.FC = () => {
       {/* Uniswap-style compact header */}
       <div className="space-y-2">
         <nav className="text-sm">
-          <Link to="/trade" className="text-text-tertiary hover:text-text-secondary">
+          <Link to="/pools" className="text-text-tertiary hover:text-text-secondary">
             Pools
           </Link>
           <span className="text-text-tertiary mx-2">/</span>
