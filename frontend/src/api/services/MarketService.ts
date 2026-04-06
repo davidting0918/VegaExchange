@@ -106,17 +106,22 @@ class MarketService {
     return data
   }
 
-  // Get public pool data + trades in one call (reduces API calls)
+  // Get public pool data + trades (fetches pool info and trades separately)
   async getPoolPublic(
     symbol: string,
     limit: number = 100
   ): Promise<ApiResponse<{ poolInfo: PoolInfo; trades: Trade[] }>> {
-    const response = await apiClient.get(`${API.pool}/public`, {
-      params: poolParams(symbol, { limit }),
-    })
-    const data = response.data
-    if (data.success && data.data) {
-      const d = data.data
+    // Fetch pool info and trades in parallel
+    const [poolRes, tradesRes] = await Promise.all([
+      apiClient.get(API.pool, { params: poolParams(symbol) }),
+      apiClient.get(`${API.pool}/trades`, { params: poolParams(symbol, { limit }) }),
+    ])
+
+    const poolData = poolRes.data
+    const tradesData = tradesRes.data
+
+    if (poolData.success && poolData.data) {
+      const d = poolData.data
       const parsed = parseSymbolToPath(d.symbol)
       const base = d.base ?? parsed?.base ?? ''
       const quote = d.quote ?? parsed?.quote ?? ''
@@ -136,7 +141,8 @@ class MarketService {
         total_fees_collected: String(d.total_fees_collected),
         current_price: String(d.current_price),
       }
-      const trades = (d.trades || []).map((t: Record<string, unknown>) => ({
+      const rawTrades = tradesData.success && tradesData.data?.trades ? tradesData.data.trades : []
+      const trades = rawTrades.map((t: Record<string, unknown>) => ({
         ...t,
         side: t.side === 0 ? 'buy' : 'sell',
         price: t.price != null ? String(t.price) : '0',
@@ -146,7 +152,7 @@ class MarketService {
       })) as Trade[]
       return { success: true, data: { poolInfo, trades } }
     }
-    return data
+    return poolData
   }
 
   // Get user-specific pool data (LP position + balances). Requires auth.
