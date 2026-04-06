@@ -60,6 +60,16 @@ async def create_symbol(request: CreateSymbolRequest, router: EngineRouter) -> d
     )
 
     router.invalidate_cache(request.symbol)
+
+    # Write initial klines if init_price is provided (CLOB symbols)
+    if request.init_price is not None:
+        from backend.services.kline import write_initial_klines
+        await write_initial_klines(
+            symbol_id=result["symbol_id"],
+            engine_type=request.engine_type.value,
+            price=request.init_price,
+        )
+
     return result
 
 
@@ -127,6 +137,16 @@ async def create_pool(request: CreatePoolRequest, router: EngineRouter) -> dict:
     )
 
     router.invalidate_cache(request.symbol)
+
+    # Write initial klines from AMM pool price (reserve_quote / reserve_base)
+    if request.initial_reserve_base > 0:
+        amm_price = request.initial_reserve_quote / request.initial_reserve_base
+        from backend.services.kline import write_initial_klines
+        await write_initial_klines(
+            symbol_id=symbol_result["symbol_id"],
+            engine_type=EngineType.AMM.value,
+            price=amm_price,
+        )
 
     return {
         "symbol": symbol_result,
