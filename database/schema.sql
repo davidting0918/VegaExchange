@@ -377,6 +377,29 @@ CREATE INDEX idx_audit_logs_created_at ON admin_audit_logs(created_at);
 CREATE INDEX idx_audit_logs_action ON admin_audit_logs(action);
 
 -- =====================================================
+-- KLINES TABLE (pre-computed candlestick data)
+-- =====================================================
+-- Upserted on every trade for all 8 intervals.
+-- Forward-filled on server startup to eliminate gaps.
+CREATE TABLE IF NOT EXISTS klines (
+    symbol_id INTEGER NOT NULL REFERENCES symbol_configs(symbol_id),
+    engine_type SMALLINT NOT NULL,           -- 0=AMM, 1=CLOB
+    interval VARCHAR(10) NOT NULL,           -- '1m','5m','15m','1h','4h','8h','1d','1M'
+    open_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    open DECIMAL(36, 18) NOT NULL,
+    high DECIMAL(36, 18) NOT NULL,
+    low DECIMAL(36, 18) NOT NULL,
+    close DECIMAL(36, 18) NOT NULL,
+    volume DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    quote_volume DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    trade_count INTEGER NOT NULL DEFAULT 0,
+
+    PRIMARY KEY (symbol_id, engine_type, interval, open_time)
+);
+
+CREATE INDEX idx_klines_query ON klines(symbol_id, engine_type, interval, open_time DESC);
+
+-- =====================================================
 -- HELPER FUNCTIONS
 -- =====================================================
 

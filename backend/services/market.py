@@ -143,87 +143,96 @@ async def get_klines(
     engine_type: Optional[int] = None,
     limit: int = 100,
 ) -> dict:
-    """Get OHLCV kline data with forward-fill for empty intervals."""
-    if interval not in KLINE_INTERVALS:
+    """Get OHLCV kline data from pre-computed klines table."""
+    from backend.services.kline import SUPPORTED_INTERVALS, get_klines as kline_get
+
+    if interval not in SUPPORTED_INTERVALS:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid interval '{interval}'. Valid: {', '.join(KLINE_INTERVALS.keys())}",
+            detail=f"Invalid interval '{interval}'. Valid: {', '.join(SUPPORTED_INTERVALS.keys())}",
         )
 
-    interval_seconds = KLINE_INTERVALS[interval]
     db = get_db()
     symbol_upper = symbol.upper()
 
-    et_filter = ""
-    params: list = [symbol_upper, interval_seconds, limit]
+    # Resolve symbol_id and engine_type
     if engine_type is not None:
-        et_filter = "AND t.engine_type = $4"
-        params.append(engine_type)
+        sym = await db.read_one(
+            "SELECT symbol_id FROM symbol_configs WHERE symbol = $1 AND engine_type = $2",
+            symbol_upper, engine_type,
+        )
+    else:
+        sym = await db.read_one(
+            "SELECT symbol_id, engine_type FROM symbol_configs WHERE symbol = $1 AND is_active = TRUE LIMIT 1",
+            symbol_upper,
+        )
+        if sym:
+            engine_type = sym["engine_type"]
 
-    raw_candles = await db.read(
-        f"""
-        SELECT
-            (EXTRACT(EPOCH FROM t.created_at)::bigint / $2) * $2 AS bucket,
-            (array_agg(t.price ORDER BY t.created_at ASC))[1] AS open,
-            MAX(t.price) AS high,
-            MIN(t.price) AS low,
-            (array_agg(t.price ORDER BY t.created_at DESC))[1] AS close,
-            SUM(t.quantity) AS volume,
-            SUM(t.quote_amount) AS quote_volume,
-            COUNT(*) AS trade_count
-        FROM trades t
-        JOIN symbol_configs sc USING (symbol_id)
-        WHERE sc.symbol = $1
-        AND t.status = 1
-        {et_filter}
-        GROUP BY bucket
-        ORDER BY bucket DESC
-        LIMIT $3
-        """,
-        *params,
-    )
-
-    if not raw_candles:
+    if not sym:
         return {"symbol": symbol_upper, "interval": interval, "klines": []}
 
-    raw_candles.reverse()
+    rows = await kline_get(sym["symbol_id"], engine_type, interval, limit)
 
-    candle_map = {}
-    for c in raw_candles:
-        candle_map[int(c["bucket"])] = c
-
-    first_bucket = int(raw_candles[0]["bucket"])
-    last_bucket = int(raw_candles[-1]["bucket"])
-
-    klines = []
-    prev_close = raw_candles[0]["close"]
-
-    bucket = first_bucket
-    while bucket <= last_bucket:
-        if bucket in candle_map:
-            c = candle_map[bucket]
-            klines.append({
-                "time": bucket,
-                "open": c["open"],
-                "high": c["high"],
-                "low": c["low"],
-                "close": c["close"],
-                "volume": c["volume"],
-                "quote_volume": c["quote_volume"],
-                "trade_count": c["trade_count"],
-            })
-            prev_close = c["close"]
-        else:
-            klines.append({
-                "time": bucket,
-                "open": prev_close,
-                "high": prev_close,
-                "low": prev_close,
-                "close": prev_close,
-                "volume": 0,
-                "quote_volume": 0,
-                "trade_count": 0,
-            })
-        bucket += interval_seconds
+    klines = [
+        {
+            "time": int(r["open_time"].timestamp()) if hasattr(r["open_time"], "timestamp") else r["open_time"],
+            "open": r["open"],
+            "high": r["high"],
+            "low": r["low"],
+            "close": r["close"],
+            "volume": r["volume"],
+            "quote_volume": r["quote_volume"],
+            "trade_count": r["trade_count"],
+        }
+        for r in rows
+    ]
 
     return {"symbol": symbol_upper, "interval": interval, "klines": klines}
+
+
+async def get_ticker(symbol: str, engine_type: Optional[int] = None) -> dict:
+    """Get 24h ticker stats from 1h klines (24 rows)."""
+    from backend.services.kline import get_24h_ticker
+
+    db = get_db()
+    symbol_upper = symbol.upper()
+
+    if engine_type is not None:
+        sym = await db.read_one(
+            "SELECT symbol_id FROM symbol_configs WHERE symbol = $1 AND engine_type = $2",
+            symbol_upper, engine_type,
+        )
+    else:
+        sym = await db.read_one(
+            "SELECT symbol_id, engine_type FROM symbol_configs WHERE symbol = $1 AND is_active = TRUE LIMIT 1",
+            symbol_upper,
+        )
+        if sym:
+            engine_type = sym["engine_type"]
+
+    if not sym:
+        raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
+
+    ticker = await get_24h_ticker(sym["symbol_id"], engine_type)
+    ticker["symbol"] = symbol_upper
+    return ticker
+
+
+async def get_all_tickers() -> list:
+    """Get 24h ticker stats for all active symbols."""
+    from backend.services.kline import get_24h_ticker
+
+    db = get_db()
+    symbols = await db.read(
+        "SELECT symbol_id, symbol, engine_type FROM symbol_configs WHERE is_active = TRUE"
+    )
+
+    tickers = []
+    for sym in symbols:
+        ticker = await get_24h_ticker(sym["symbol_id"], sym["engine_type"])
+        ticker["symbol"] = sym["symbol"]
+        ticker["engine_type"] = sym["engine_type"]
+        tickers.append(ticker)
+
+    return tickers

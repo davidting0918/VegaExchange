@@ -294,4 +294,17 @@ class BaseEngine(ABC):
             counterparty_user_id,  # Maps to counterparty column (NULL for AMM trades)
         )
 
+        # Upsert kline candles for all 8 intervals
+        try:
+            from backend.services.kline import upsert_klines
+            await upsert_klines(
+                symbol_id=self.symbol_config["symbol_id"],
+                engine_type=self.engine_type.value,
+                price=price,
+                quantity=quantity,
+                quote_amount=quote_amount,
+            )
+        except Exception as e:
+            print(f"[WARN] Failed to upsert klines: {e}")
+
         return result["trade_id"]

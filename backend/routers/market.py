@@ -38,10 +38,23 @@ async def get_symbol_engines(
 @router.get("/klines", response_model=APIResponse)
 async def get_klines(
     symbol: str = Query(..., description="Symbol (e.g. BTC/USDT-USDT:SPOT)"),
-    interval: str = Query("1h", description="Candle interval: 1m, 5m, 15m, 1h, 4h, 1d"),
+    interval: str = Query("1h", description="Candle interval: 1m, 5m, 15m, 1h, 4h, 8h, 1d, 1M"),
     engine_type: Optional[int] = Query(None, description="Engine type: 0=AMM, 1=CLOB"),
     limit: int = Query(100, ge=1, le=500, description="Number of candles to return"),
 ):
-    """Get OHLCV kline data with forward-fill for empty intervals."""
+    """Get OHLCV kline data from pre-computed klines table."""
     data = await market_service.get_klines(symbol, interval, engine_type, limit)
+    return APIResponse(success=True, data=data)
+
+
+@router.get("/ticker", response_model=APIResponse)
+async def get_ticker(
+    symbol: Optional[str] = Query(None, description="Symbol. If omitted, returns all tickers."),
+    engine_type: Optional[int] = Query(None, description="Engine type: 0=AMM, 1=CLOB"),
+):
+    """Get 24h ticker stats. Single symbol or all active symbols."""
+    if symbol:
+        data = await market_service.get_ticker(symbol, engine_type)
+    else:
+        data = await market_service.get_all_tickers()
     return APIResponse(success=True, data=data)

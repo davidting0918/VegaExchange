@@ -35,6 +35,13 @@ async def lifespan(app: FastAPI):
     init_ws_manager()
     print("WebSocket manager initialized.")
 
+    # Backfill kline gaps from downtime
+    try:
+        from backend.services.kline import kline_backfill
+        await kline_backfill()
+    except Exception as e:
+        print(f"[WARN] Kline backfill failed: {e}")
+
     yield
 
     # Shutdown

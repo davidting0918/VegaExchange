@@ -61,6 +61,7 @@ class CreateSymbolRequest(BaseModel):
     max_trade_amount: Decimal = Field(default=Decimal("1000000"), description="Maximum trade amount")
     price_precision: int = Field(default=8, description="Price decimal precision")
     quantity_precision: int = Field(default=8, description="Quantity decimal precision")
+    init_price: Optional[Decimal] = Field(None, gt=0, description="Initial reference price for CLOB kline chart (optional)")
 
     @field_validator("symbol", "base_asset", "quote_asset", "market", "settle")
     @classmethod
