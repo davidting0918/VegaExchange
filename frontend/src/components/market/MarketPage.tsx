@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import BigNumber from 'bignumber.js'
 import { useTrading, useUser } from '../../hooks'
 import { Card, CardHeader, Button, LoadingSpinner } from '../common'
@@ -26,7 +26,6 @@ const WS_SIDE_MAP: Record<number, TradeSide> = {
 
 export const MarketPage: React.FC = () => {
   const { pair } = useParams<{ pair: string }>()
-  const navigate = useNavigate()
 
   // Build symbol from simplified URL param (e.g. "BTC-USDT" → "BTC/USDT-USDT:SPOT")
   const decodedSymbol = useMemo(() => {
@@ -486,11 +485,6 @@ export const MarketPage: React.FC = () => {
     }
   }
 
-  // Handle back navigation
-  const handleBack = () => {
-    navigate('/trade/spot')
-  }
-
   // Set market order price
   const handleSetMarketPrice = () => {
     setPrice(orderSide === 'buy' ? bestAsk : bestBid)
@@ -507,14 +501,6 @@ export const MarketPage: React.FC = () => {
   if (!symbolInfo) {
     return (
       <div className="space-y-6 animate-fade-in">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" onClick={handleBack}>
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-            Back
-          </Button>
-        </div>
         <Card className="text-center py-12">
           <p className="text-text-secondary">Market not found</p>
         </Card>
@@ -537,19 +523,11 @@ export const MarketPage: React.FC = () => {
 
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" onClick={handleBack}>
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-            Back
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold text-text-primary">
-              {symbolInfo.base}/{symbolInfo.quote}
-            </h1>
-            <p className="text-text-secondary">Order Book Market</p>
-          </div>
+        <div>
+          <h1 className="text-2xl font-bold text-text-primary">
+            {symbolInfo.base}/{symbolInfo.quote}
+          </h1>
+          <p className="text-text-secondary">Order Book Market</p>
         </div>
         <div className="text-right">
           <div className="flex items-center justify-end gap-2 mb-1">
