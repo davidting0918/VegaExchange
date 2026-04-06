@@ -15,11 +15,35 @@ interface AuditEntry {
 
 const PAGE_SIZE = 20
 
+// Summarize details into a short string for collapsed view
+function summarizeDetails(details: Record<string, unknown> | null): string {
+  if (!details) return '—'
+  const keys = Object.keys(details)
+  if (keys.length === 0) return '—'
+
+  // Common patterns
+  if ('old' in details && 'new' in details) {
+    return `${keys.length - 2 > 0 ? keys.length + ' fields' : 'value'} changed`
+  }
+  if (keys.length <= 2) {
+    return keys.map(k => `${k}: ${JSON.stringify(details[k])}`).join(', ')
+  }
+  return `${keys.length} fields`
+}
+
+// Render a value with appropriate formatting
+function renderValue(value: unknown): string {
+  if (value === null || value === undefined) return 'null'
+  if (typeof value === 'object') return JSON.stringify(value, null, 2)
+  return String(value)
+}
+
 export function AuditLogPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [offset, setOffset] = useState(0)
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
 
   // Filters
   const [actionFilter, setActionFilter] = useState('')
@@ -50,6 +74,15 @@ export function AuditLogPage() {
   const handleFilter = () => {
     setOffset(0)
     loadAuditLog()
+  }
+
+  const toggleExpand = (id: number) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
@@ -108,55 +141,126 @@ export function AuditLogPage() {
         <table className="w-full">
           <thead>
             <tr className="text-left text-xs text-text-tertiary uppercase tracking-wide border-b border-border-default bg-bg-secondary">
+              <th className="px-4 py-3 font-medium w-8"></th>
               <th className="px-4 py-3 font-medium">Time</th>
               <th className="px-4 py-3 font-medium">Admin</th>
               <th className="px-4 py-3 font-medium">Action</th>
               <th className="px-4 py-3 font-medium">Target</th>
-              <th className="px-4 py-3 font-medium">Details</th>
+              <th className="px-4 py-3 font-medium">Summary</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-default">
             {loading ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center">
+                <td colSpan={6} className="px-4 py-8 text-center">
                   <div className="inline-block w-5 h-5 border-2 border-text-tertiary border-t-accent-blue rounded-full animate-spin" />
                 </td>
               </tr>
             ) : entries.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-text-tertiary text-sm">
+                <td colSpan={6} className="px-4 py-8 text-center text-text-tertiary text-sm">
                   No audit log entries found.
                 </td>
               </tr>
             ) : (
-              entries.map((entry) => (
-                <tr key={entry.id} className="text-sm">
-                  <td className="px-4 py-3 text-text-tertiary text-xs whitespace-nowrap">
-                    {new Date(entry.created_at).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3 text-text-secondary">
-                    {entry.admin_name || entry.admin_email || entry.admin_id}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="px-2 py-0.5 text-xs rounded bg-bg-hover text-text-primary">
-                      {entry.action}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-text-secondary text-xs">
-                    {entry.target_type && (
-                      <span className="text-text-tertiary">{entry.target_type}:</span>
-                    )}{' '}
-                    {entry.target_id || '—'}
-                  </td>
-                  <td className="px-4 py-3 max-w-xs">
-                    {entry.details ? (
-                      <code className="text-xs text-text-tertiary break-all">
-                        {JSON.stringify(entry.details)}
-                      </code>
-                    ) : '—'}
-                  </td>
-                </tr>
-              ))
+              entries.map((entry) => {
+                const isExpanded = expandedIds.has(entry.id)
+                const hasDetails = entry.details && Object.keys(entry.details).length > 0
+
+                return (
+                  <tr
+                    key={entry.id}
+                    className={`text-sm ${hasDetails ? 'cursor-pointer hover:bg-bg-tertiary/30' : ''}`}
+                    onClick={() => hasDetails && toggleExpand(entry.id)}
+                  >
+                    <td colSpan={6} className="p-0">
+                      {/* Row content */}
+                      <div className="flex items-center px-4 py-3">
+                        {/* Expand arrow */}
+                        <div className="w-8 flex-shrink-0">
+                          {hasDetails && (
+                            <span className={`text-text-tertiary text-xs transition-transform inline-block ${isExpanded ? 'rotate-90' : ''}`}>
+                              ▶
+                            </span>
+                          )}
+                        </div>
+                        {/* Time */}
+                        <div className="w-40 flex-shrink-0 text-text-tertiary text-xs whitespace-nowrap">
+                          {new Date(entry.created_at).toLocaleString()}
+                        </div>
+                        {/* Admin */}
+                        <div className="w-32 flex-shrink-0 text-text-secondary truncate">
+                          {entry.admin_name || entry.admin_email || entry.admin_id}
+                        </div>
+                        {/* Action */}
+                        <div className="w-40 flex-shrink-0">
+                          <span className="px-2 py-0.5 text-xs rounded bg-bg-hover text-text-primary">
+                            {entry.action}
+                          </span>
+                        </div>
+                        {/* Target */}
+                        <div className="w-32 flex-shrink-0 text-text-secondary text-xs">
+                          {entry.target_type && (
+                            <span className="text-text-tertiary">{entry.target_type}:</span>
+                          )}{' '}
+                          {entry.target_id || '—'}
+                        </div>
+                        {/* Summary */}
+                        <div className="flex-1 text-text-tertiary text-xs truncate">
+                          {summarizeDetails(entry.details)}
+                        </div>
+                      </div>
+
+                      {/* Expanded details */}
+                      {isExpanded && entry.details && (
+                        <div className="px-4 pb-4 pl-12">
+                          <div className="bg-bg-tertiary rounded-md p-4 space-y-3">
+                            {/* Check for old/new pattern */}
+                            {'old' in entry.details && 'new' in entry.details ? (
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <p className="text-xs font-medium text-accent-red mb-2">Old Value</p>
+                                  <pre className="text-xs font-mono text-text-secondary whitespace-pre-wrap bg-accent-red/5 rounded p-2 border border-accent-red/10">
+                                    {renderValue(entry.details.old)}
+                                  </pre>
+                                </div>
+                                <div>
+                                  <p className="text-xs font-medium text-accent-green mb-2">New Value</p>
+                                  <pre className="text-xs font-mono text-text-secondary whitespace-pre-wrap bg-accent-green/5 rounded p-2 border border-accent-green/10">
+                                    {renderValue(entry.details.new)}
+                                  </pre>
+                                </div>
+                                {/* Other fields besides old/new */}
+                                {Object.entries(entry.details)
+                                  .filter(([k]) => k !== 'old' && k !== 'new')
+                                  .map(([key, val]) => (
+                                    <div key={key} className="col-span-2">
+                                      <span className="text-xs text-text-tertiary">{key}:</span>{' '}
+                                      <span className="text-xs text-text-primary font-mono">{renderValue(val)}</span>
+                                    </div>
+                                  ))
+                                }
+                              </div>
+                            ) : (
+                              /* Generic key-value display */
+                              <div className="space-y-1.5">
+                                {Object.entries(entry.details).map(([key, val]) => (
+                                  <div key={key} className="flex gap-3">
+                                    <span className="text-xs text-text-tertiary min-w-[80px]">{key}:</span>
+                                    <span className="text-xs text-text-primary font-mono break-all">
+                                      {renderValue(val)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })
             )}
           </tbody>
         </table>
