@@ -15,18 +15,31 @@ interface AuditEntry {
 
 const PAGE_SIZE = 20
 
+// Safely parse details — backend may return strings instead of objects
+function parseDetails(raw: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null
+  const result: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === 'string') {
+      try { result[k] = JSON.parse(v) } catch { result[k] = v }
+    } else {
+      result[k] = v
+    }
+  }
+  return result
+}
+
 // Summarize details into a short string for collapsed view
 function summarizeDetails(details: Record<string, unknown> | null): string {
   if (!details) return '—'
   const keys = Object.keys(details)
   if (keys.length === 0) return '—'
 
-  // Common patterns
   if ('old' in details && 'new' in details) {
     return `${keys.length - 2 > 0 ? keys.length + ' fields' : 'value'} changed`
   }
   if (keys.length <= 2) {
-    return keys.map(k => `${k}: ${JSON.stringify(details[k])}`).join(', ')
+    return keys.map(k => `${k}: ${typeof details[k] === 'string' ? details[k] : JSON.stringify(details[k])}`).join(', ')
   }
   return `${keys.length} fields`
 }
@@ -165,7 +178,8 @@ export function AuditLogPage() {
             ) : (
               entries.map((entry) => {
                 const isExpanded = expandedIds.has(entry.id)
-                const hasDetails = entry.details && Object.keys(entry.details).length > 0
+                const parsedDetails = parseDetails(entry.details)
+                const hasDetails = parsedDetails && Object.keys(parsedDetails).length > 0
 
                 return (
                   <tr
@@ -207,31 +221,31 @@ export function AuditLogPage() {
                         </div>
                         {/* Summary */}
                         <div className="flex-1 text-text-tertiary text-xs truncate">
-                          {summarizeDetails(entry.details)}
+                          {summarizeDetails(parsedDetails)}
                         </div>
                       </div>
 
                       {/* Expanded details */}
-                      {isExpanded && entry.details && (
+                      {isExpanded && parsedDetails && (
                         <div className="px-4 pb-4 pl-12">
                           <div className="bg-bg-tertiary rounded-md p-4 space-y-3">
                             {/* Check for old/new pattern */}
-                            {'old' in entry.details && 'new' in entry.details ? (
+                            {'old' in parsedDetails && 'new' in parsedDetails ? (
                               <div className="grid grid-cols-2 gap-4">
                                 <div>
                                   <p className="text-xs font-medium text-accent-red mb-2">Old Value</p>
                                   <pre className="text-xs font-mono text-text-secondary whitespace-pre-wrap bg-accent-red/5 rounded p-2 border border-accent-red/10">
-                                    {renderValue(entry.details.old)}
+                                    {renderValue(parsedDetails.old)}
                                   </pre>
                                 </div>
                                 <div>
                                   <p className="text-xs font-medium text-accent-green mb-2">New Value</p>
                                   <pre className="text-xs font-mono text-text-secondary whitespace-pre-wrap bg-accent-green/5 rounded p-2 border border-accent-green/10">
-                                    {renderValue(entry.details.new)}
+                                    {renderValue(parsedDetails.new)}
                                   </pre>
                                 </div>
                                 {/* Other fields besides old/new */}
-                                {Object.entries(entry.details)
+                                {Object.entries(parsedDetails)
                                   .filter(([k]) => k !== 'old' && k !== 'new')
                                   .map(([key, val]) => (
                                     <div key={key} className="col-span-2">
@@ -244,7 +258,7 @@ export function AuditLogPage() {
                             ) : (
                               /* Generic key-value display */
                               <div className="space-y-1.5">
-                                {Object.entries(entry.details).map(([key, val]) => (
+                                {Object.entries(parsedDetails).map(([key, val]) => (
                                   <div key={key} className="flex gap-3">
                                     <span className="text-xs text-text-tertiary min-w-[80px]">{key}:</span>
                                     <span className="text-xs text-text-primary font-mono break-all">
