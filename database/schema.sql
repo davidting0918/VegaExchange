@@ -20,6 +20,28 @@
 -- trade_status:  0 = pending, 1 = completed, 2 = failed
 
 -- =====================================================
+-- HELPER FUNCTIONS (defined first so triggers below can reference them)
+-- =====================================================
+-- Note: ID generation is handled in the backend layer (backend/core/id_generator.py)
+-- ID formats:
+--   - user_id: 6-digit random integer (TEXT)
+--   - admin_id: 6-char random alphanumeric (TEXT)
+--   - pool_id: 0x + 40 hex chars (crypto-style address)
+--   - order_id: 13-digit timestamp (milliseconds)
+--   - trade_id: 13-digit timestamp (milliseconds)
+--   - symbol_id: SERIAL (auto-increment)
+--   - lp_positions.id: SERIAL (auto-increment)
+--   - lp_events.id: SERIAL (auto-increment)
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- =====================================================
 -- USERS TABLE
 -- =====================================================
 CREATE TABLE IF NOT EXISTS users (
@@ -400,26 +422,8 @@ CREATE TABLE IF NOT EXISTS klines (
 CREATE INDEX idx_klines_query ON klines(symbol_id, engine_type, interval, open_time DESC);
 
 -- =====================================================
--- HELPER FUNCTIONS
+-- TRIGGERS (function defined at top of file)
 -- =====================================================
-
--- Note: ID generation is handled in the backend layer (backend/core/id_generator.py)
--- ID formats:
---   - user_id: 6-digit random integer (TEXT)
---   - pool_id: 0x + 40 hex chars (crypto-style address)
---   - order_id: 13-digit timestamp (milliseconds)
---   - trade_id: 13-digit timestamp (milliseconds)
---   - symbol_id: SERIAL (auto-increment)
---   - lp_positions.id: SERIAL (auto-increment)
---   - lp_events.id: SERIAL (auto-increment)
-
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
 
 CREATE TRIGGER update_users_updated_at
     BEFORE UPDATE ON users
