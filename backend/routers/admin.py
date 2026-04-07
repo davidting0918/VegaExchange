@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from backend.core.audit_log import AuditContext, audit_logged, get_audit_context
+from backend.core.audit_log import AuditContext, AuditOp, audit_logged, get_audit_context
 from backend.core.auth import require_admin
 from backend.core.dependencies import get_router
 from backend.engines.engine_router import EngineRouter
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # =============================================================================
 
 @router.post("/create_symbol", response_model=APIResponse)
-@audit_logged(action="create_symbol", target_type="symbol")
+@audit_logged(action="create_symbol", target_type="symbol", op=AuditOp.CREATE)
 async def create_symbol(
     request: CreateSymbolRequest,
     router: EngineRouter = Depends(get_router),
@@ -47,13 +47,25 @@ async def create_symbol(
     result = await admin_service.create_symbol(request, router)
     audit.set(
         target_id=str(result["symbol_id"]),
-        details={"symbol": request.symbol, "engine_type": request.engine_type.value},
+        new={
+            "symbol": request.symbol,
+            "base": request.base_asset,
+            "quote": request.quote_asset,
+            "market": request.market,
+            "settle": request.settle or request.quote_asset,
+            "engine_type": request.engine_type.value,
+            "min_trade_amount": request.min_trade_amount,
+            "max_trade_amount": request.max_trade_amount,
+            "price_precision": request.price_precision,
+            "quantity_precision": request.quantity_precision,
+            "init_price": request.init_price,
+        },
     )
     return APIResponse(success=True, data=result)
 
 
 @router.post("/create_pool", response_model=APIResponse)
-@audit_logged(action="create_pool", target_type="pool")
+@audit_logged(action="create_pool", target_type="pool", op=AuditOp.CREATE)
 async def create_pool(
     request: CreatePoolRequest,
     router: EngineRouter = Depends(get_router),
@@ -64,13 +76,27 @@ async def create_pool(
     result = await admin_service.create_pool(request, router)
     audit.set(
         target_id=result["pool_id"],
-        details={"symbol": request.symbol, "symbol_id": result["symbol"]["symbol_id"], "fee_rate": float(request.fee_rate)},
+        new={
+            "symbol": request.symbol,
+            "base": request.base_asset,
+            "quote": request.quote_asset,
+            "market": request.market,
+            "settle": request.settle or request.quote_asset,
+            "symbol_id": result["symbol"]["symbol_id"],
+            "initial_reserve_base": request.initial_reserve_base,
+            "initial_reserve_quote": request.initial_reserve_quote,
+            "fee_rate": request.fee_rate,
+            "min_trade_amount": request.min_trade_amount,
+            "max_trade_amount": request.max_trade_amount,
+            "price_precision": request.price_precision,
+            "quantity_precision": request.quantity_precision,
+        },
     )
     return APIResponse(success=True, data=result)
 
 
 @router.post("/update_symbol_status/{symbol}", response_model=APIResponse)
-@audit_logged(action="update_symbol_status", target_type="symbol")
+@audit_logged(action="update_symbol_status", target_type="symbol", op=AuditOp.UPDATE)
 async def update_symbol_status(
     symbol: str,
     status: SymbolStatus = Query(..., description="Symbol status (ACTIVE or MAINTENANCE)"),
@@ -82,13 +108,14 @@ async def update_symbol_status(
     result = await admin_service.update_symbol_status(symbol, status, router)
     audit.set(
         target_id=result["symbol"],
-        details={"new_status": "active" if result["is_active"] else "maintenance"},
+        old={"is_active": result["prev_is_active"]},
+        new={"is_active": result["is_active"]},
     )
     return APIResponse(success=True, data=result)
 
 
 @router.post("/delete_symbol/{symbol}", response_model=APIResponse)
-@audit_logged(action="delete_symbol", target_type="symbol")
+@audit_logged(action="delete_symbol", target_type="symbol", op=AuditOp.DELETE)
 async def delete_symbol(
     symbol: str,
     router: EngineRouter = Depends(get_router),
@@ -97,7 +124,10 @@ async def delete_symbol(
 ):
     """Delete a symbol (soft delete). Requires admin permissions."""
     result = await admin_service.delete_symbol(symbol, router)
-    audit.set(target_id=result["symbol"])
+    audit.set(
+        target_id=result["symbol"],
+        old=result["prev_row"],
+    )
     return APIResponse(success=True, data=result)
 
 
@@ -124,7 +154,7 @@ async def get_symbol(
 
 
 @router.post("/symbols/update/{symbol_id}", response_model=APIResponse)
-@audit_logged(action="update_symbol_config", target_type="symbol")
+@audit_logged(action="update_symbol_config", target_type="symbol", op=AuditOp.UPDATE)
 async def update_symbol(
     symbol_id: int,
     request: UpdateSymbolRequest,
@@ -133,12 +163,13 @@ async def update_symbol(
     audit: AuditContext = Depends(get_audit_context),
 ):
     """Update mutable fields of a symbol config."""
-    data = await admin_service.update_symbol(symbol_id, request, router)
+    result = await admin_service.update_symbol(symbol_id, request, router)
     audit.set(
         target_id=str(symbol_id),
-        details={k: v for k, v in request.model_dump(exclude_none=True).items()},
+        old=result["audit_old"],
+        new=result["audit_new"],
     )
-    return APIResponse(success=True, data=data)
+    return APIResponse(success=True, data=result["symbol"])
 
 
 # =============================================================================
@@ -202,7 +233,7 @@ async def get_admin_user(
 
 
 @router.post("/users/{user_id}/balance/update", response_model=APIResponse)
-@audit_logged(action="update_user_balance", target_type="user")
+@audit_logged(action="update_user_balance", target_type="user", op=AuditOp.UPDATE)
 async def update_user_balance(
     user_id: str,
     request: UpdateUserBalanceRequest,
@@ -213,17 +244,14 @@ async def update_user_balance(
     result = await admin_service.update_user_balance(user_id, request.currency, request.available)
     audit.set(
         target_id=user_id,
-        details={
-            "currency": result["currency"],
-            "old": float(result["old_available"]),
-            "new": float(result["new_available"]),
-        },
+        old={"currency": result["currency"], "available": result["old_available"]},
+        new={"currency": result["currency"], "available": result["new_available"]},
     )
     return APIResponse(success=True, data=result)
 
 
 @router.post("/users/{user_id}/status/update", response_model=APIResponse)
-@audit_logged(action="update_user_status", target_type="user")
+@audit_logged(action="update_user_status", target_type="user", op=AuditOp.UPDATE)
 async def update_user_status(
     user_id: str,
     request: UpdateUserStatusRequest,
@@ -234,13 +262,14 @@ async def update_user_status(
     result = await admin_service.update_user_status(user_id, request.is_active)
     audit.set(
         target_id=user_id,
-        details={"is_active": request.is_active, "tokens_revoked": result["tokens_revoked"]},
+        old={"is_active": result["prev_is_active"]},
+        new={"is_active": result["is_active"], "tokens_revoked": result["tokens_revoked"]},
     )
     return APIResponse(success=True, data=result)
 
 
 @router.post("/users/{user_id}/reset-balances", response_model=APIResponse)
-@audit_logged(action="reset_user_balances", target_type="user")
+@audit_logged(action="reset_user_balances", target_type="user", op=AuditOp.UPDATE)
 async def reset_user_balances(
     user_id: str,
     current_admin: dict = Depends(require_admin),
@@ -250,7 +279,8 @@ async def reset_user_balances(
     result = await admin_service.reset_user_balances(user_id)
     audit.set(
         target_id=user_id,
-        details={"reset_to": result["reset_to"]},
+        old=result["prev_balances"],
+        new=result["new_balances"],
     )
     return APIResponse(success=True, data=result)
 
@@ -267,7 +297,7 @@ async def get_settings(current_admin: dict = Depends(require_admin)):
 
 
 @router.post("/settings/update/{key}", response_model=APIResponse)
-@audit_logged(action="update_setting", target_type="setting")
+@audit_logged(action="update_setting", target_type="setting", op=AuditOp.UPDATE)
 async def update_setting(
     key: str,
     request: UpdateSettingRequest,
@@ -278,7 +308,8 @@ async def update_setting(
     result = await admin_service.update_setting(key, request.value)
     audit.set(
         target_id=key,
-        details={"old": result["old_value"], "new": request.value},
+        old={"value": result["old_value"]},
+        new={"value": request.value},
     )
     return APIResponse(success=True, data=result["setting"])
 
@@ -295,7 +326,7 @@ async def get_whitelist(current_admin: dict = Depends(require_admin)):
 
 
 @router.post("/whitelist", response_model=APIResponse)
-@audit_logged(action="add_whitelist", target_type="whitelist")
+@audit_logged(action="add_whitelist", target_type="whitelist", op=AuditOp.CREATE)
 async def add_whitelist(
     request: AddWhitelistRequest,
     current_admin: dict = Depends(require_admin),
@@ -305,13 +336,17 @@ async def add_whitelist(
     result = await admin_service.add_whitelist(request.email, request.description)
     audit.set(
         target_id=str(result["id"]),
-        details={"email": request.email},
+        new={
+            "id": result["id"],
+            "email": request.email,
+            "description": request.description,
+        },
     )
     return APIResponse(success=True, data=result)
 
 
 @router.post("/whitelist/remove/{whitelist_id}", response_model=APIResponse)
-@audit_logged(action="remove_whitelist", target_type="whitelist")
+@audit_logged(action="remove_whitelist", target_type="whitelist", op=AuditOp.DELETE)
 async def remove_whitelist(
     whitelist_id: int,
     current_admin: dict = Depends(require_admin),
@@ -321,7 +356,11 @@ async def remove_whitelist(
     result = await admin_service.remove_whitelist(whitelist_id)
     audit.set(
         target_id=str(whitelist_id),
-        details={"email": result["email"]},
+        old={
+            "id": result["id"],
+            "email": result["email"],
+            "description": result.get("description"),
+        },
     )
     return APIResponse(success=True, data=result)
 

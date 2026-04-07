@@ -157,34 +157,59 @@ async def create_pool(request: CreatePoolRequest, router: EngineRouter) -> dict:
 
 
 async def update_symbol_status(symbol: str, status: SymbolStatus, router: EngineRouter) -> dict:
-    """Update symbol trading status."""
+    """Update symbol trading status. Returns previous is_active for audit logging."""
     db = get_db()
     is_active = status == SymbolStatus.ACTIVE
+    symbol_upper = symbol.upper()
 
-    result = await db.execute(
-        "UPDATE symbol_configs SET is_active = $2, updated_at = NOW() WHERE symbol = $1",
-        symbol.upper(), is_active,
+    existing = await db.read_one(
+        "SELECT is_active FROM symbol_configs WHERE symbol = $1",
+        symbol_upper,
     )
-    if "UPDATE 0" in result:
+    if not existing:
         raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
 
-    router.invalidate_cache(symbol.upper())
-    return {"symbol": symbol.upper(), "is_active": is_active}
+    await db.execute(
+        "UPDATE symbol_configs SET is_active = $2, updated_at = NOW() WHERE symbol = $1",
+        symbol_upper, is_active,
+    )
+
+    router.invalidate_cache(symbol_upper)
+    return {
+        "symbol": symbol_upper,
+        "is_active": is_active,
+        "prev_is_active": existing["is_active"],
+    }
 
 
 async def delete_symbol(symbol: str, router: EngineRouter) -> dict:
-    """Soft delete a symbol."""
+    """Soft delete a symbol. Returns previous row for audit logging."""
     db = get_db()
+    symbol_upper = symbol.upper()
 
-    result = await db.execute(
-        "UPDATE symbol_configs SET is_active = FALSE, updated_at = NOW() WHERE symbol = $1",
-        symbol.upper(),
+    existing = await db.read_one(
+        """
+        SELECT symbol_id, symbol, market, base, quote, settle, engine_type, is_active,
+               min_trade_amount, max_trade_amount, price_precision, quantity_precision
+        FROM symbol_configs
+        WHERE symbol = $1
+        """,
+        symbol_upper,
     )
-    if "UPDATE 0" in result:
+    if not existing:
         raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
 
-    router.invalidate_cache(symbol.upper())
-    return {"symbol": symbol.upper(), "deleted": True}
+    await db.execute(
+        "UPDATE symbol_configs SET is_active = FALSE, updated_at = NOW() WHERE symbol = $1",
+        symbol_upper,
+    )
+
+    router.invalidate_cache(symbol_upper)
+    return {
+        "symbol": symbol_upper,
+        "deleted": True,
+        "prev_row": dict(existing),
+    }
 
 
 async def get_audit_log(
@@ -262,7 +287,13 @@ async def get_audit_log(
 # =============================================================================
 
 async def update_symbol(symbol_id: int, request: UpdateSymbolRequest, router: EngineRouter) -> dict:
-    """Update mutable fields of a symbol config. For AMM symbols, also update pool fee_rate."""
+    """
+    Update mutable fields of a symbol config. For AMM symbols, also update pool fee_rate.
+
+    Returns the updated symbol along with `audit_old` and `audit_new` snapshots
+    containing only the fields included in the request (the caller compares against
+    actual changes via the audit decorator).
+    """
     db = get_db()
 
     # Verify symbol exists
@@ -273,6 +304,16 @@ async def update_symbol(symbol_id: int, request: UpdateSymbolRequest, router: En
     if not existing:
         raise HTTPException(status_code=404, detail=f"Symbol with id {symbol_id} not found")
 
+    is_amm = existing["engine_type"] == EngineType.AMM.value
+
+    # Capture old values for fields that the request is touching
+    audit_old: dict = {}
+    audit_new: dict = {}
+
+    def _track(field: str, new_value):
+        audit_old[field] = existing.get(field)
+        audit_new[field] = new_value
+
     # Build SET clause for symbol_configs
     updates = []
     params: list = []
@@ -282,26 +323,31 @@ async def update_symbol(symbol_id: int, request: UpdateSymbolRequest, router: En
         updates.append(f"engine_params = ${param_idx}::jsonb")
         params.append(json.dumps(request.engine_params))
         param_idx += 1
+        _track("engine_params", request.engine_params)
 
     if request.min_trade_amount is not None:
         updates.append(f"min_trade_amount = ${param_idx}")
         params.append(request.min_trade_amount)
         param_idx += 1
+        _track("min_trade_amount", request.min_trade_amount)
 
     if request.max_trade_amount is not None:
         updates.append(f"max_trade_amount = ${param_idx}")
         params.append(request.max_trade_amount)
         param_idx += 1
+        _track("max_trade_amount", request.max_trade_amount)
 
     if request.price_precision is not None:
         updates.append(f"price_precision = ${param_idx}")
         params.append(request.price_precision)
         param_idx += 1
+        _track("price_precision", request.price_precision)
 
     if request.quantity_precision is not None:
         updates.append(f"quantity_precision = ${param_idx}")
         params.append(request.quantity_precision)
         param_idx += 1
+        _track("quantity_precision", request.quantity_precision)
 
     if updates:
         updates.append("updated_at = NOW()")
@@ -313,19 +359,30 @@ async def update_symbol(symbol_id: int, request: UpdateSymbolRequest, router: En
         )
 
     # Update AMM pool fee_rate if provided and symbol is AMM
-    if request.fee_rate is not None and existing["engine_type"] == EngineType.AMM.value:
+    if request.fee_rate is not None and is_amm:
+        prev_pool = await db.read_one(
+            "SELECT fee_rate FROM amm_pools WHERE symbol_id = $1",
+            symbol_id,
+        )
         await db.execute(
             "UPDATE amm_pools SET fee_rate = $1 WHERE symbol_id = $2",
             request.fee_rate,
             symbol_id,
         )
+        audit_old["fee_rate"] = prev_pool["fee_rate"] if prev_pool else None
+        audit_new["fee_rate"] = request.fee_rate
 
     # Invalidate engine cache
     router.invalidate_cache(existing["symbol"])
 
     # Return updated symbol
     from backend.services.market import get_symbol_by_id
-    return await get_symbol_by_id(symbol_id)
+    updated = await get_symbol_by_id(symbol_id)
+    return {
+        "symbol": updated,
+        "audit_old": audit_old,
+        "audit_new": audit_new,
+    }
 
 
 # =============================================================================
@@ -504,12 +561,14 @@ async def update_user_balance(user_id: str, currency: str, available: Decimal) -
 
 
 async def update_user_status(user_id: str, is_active: bool) -> dict:
-    """Enable/disable a user account. Revokes tokens when disabling."""
+    """Enable/disable a user account. Revokes tokens when disabling. Returns previous status."""
     db = get_db()
 
     user = await db.read_one("SELECT user_id, is_active FROM users WHERE user_id = $1", user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
+
+    prev_is_active = user["is_active"]
 
     await db.execute(
         "UPDATE users SET is_active = $1, updated_at = NOW() WHERE user_id = $2",
@@ -523,11 +582,19 @@ async def update_user_status(user_id: str, is_active: bool) -> dict:
             user_id,
         )
 
-    return {"user_id": user_id, "is_active": is_active, "tokens_revoked": not is_active}
+    return {
+        "user_id": user_id,
+        "is_active": is_active,
+        "tokens_revoked": not is_active,
+        "prev_is_active": prev_is_active,
+    }
 
 
 async def reset_user_balances(user_id: str) -> dict:
-    """Reset user balances to platform defaults from platform_settings."""
+    """
+    Reset user balances to platform defaults from platform_settings.
+    Returns previous balances per currency for audit logging.
+    """
     db = get_db()
 
     user = await db.read_one("SELECT user_id FROM users WHERE user_id = $1", user_id)
@@ -538,6 +605,20 @@ async def reset_user_balances(user_id: str) -> dict:
     from backend.services.user import _get_init_funding
     funding = await _get_init_funding()
 
+    # Snapshot previous spot balances for the currencies that will be reset
+    prev_rows = await db.read(
+        """
+        SELECT currency, available FROM user_balances
+        WHERE user_id = $1 AND account_type = 'spot' AND currency = ANY($2::text[])
+        """,
+        user_id,
+        list(funding.keys()),
+    )
+    prev_balances = {row["currency"]: float(row["available"]) for row in prev_rows}
+    # Ensure every reset currency appears in prev_balances (missing → 0)
+    for currency in funding.keys():
+        prev_balances.setdefault(currency, 0.0)
+
     for currency, amount in funding.items():
         await db.execute(
             """
@@ -547,7 +628,13 @@ async def reset_user_balances(user_id: str) -> dict:
             amount, user_id, currency,
         )
 
-    return {"user_id": user_id, "reset_to": {k: float(v) for k, v in funding.items()}}
+    new_balances = {k: float(v) for k, v in funding.items()}
+    return {
+        "user_id": user_id,
+        "reset_to": new_balances,
+        "prev_balances": prev_balances,
+        "new_balances": new_balances,
+    }
 
 
 # =============================================================================
