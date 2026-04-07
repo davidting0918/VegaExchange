@@ -1,5 +1,12 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { AdminService } from '@/api/services/AdminService'
+
+type DetailsValue = Record<string, unknown> | unknown[] | string | number | boolean | null
+
+interface AuditDetails {
+  old: DetailsValue
+  new: DetailsValue
+}
 
 interface AuditEntry {
   id: number
@@ -9,46 +16,106 @@ interface AuditEntry {
   action: string
   target_type: string | null
   target_id: string | null
-  details: Record<string, unknown> | null
+  details: AuditDetails | null
   created_at: string
 }
 
 const PAGE_SIZE = 20
 
-// Safely parse details — backend may return strings instead of objects
-function parseDetails(raw: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!raw || typeof raw !== 'object') return null
-  const result: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(raw)) {
-    if (typeof v === 'string') {
-      try { result[k] = JSON.parse(v) } catch { result[k] = v }
-    } else {
-      result[k] = v
+// Pretty-print any JSON-serializable value with 2-space indent
+function prettyJson(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  return JSON.stringify(value, null, 2)
+}
+
+type DiffLineKind = 'unchanged' | 'removed' | 'added'
+interface DiffLine {
+  kind: DiffLineKind
+  text: string
+}
+
+// LCS-based unified line diff (no external dependency)
+function lineDiff(oldText: string, newText: string): DiffLine[] {
+  const a = oldText.split('\n')
+  const b = newText.split('\n')
+  const m = a.length
+  const n = b.length
+
+  // dp[i][j] = LCS length of a[i..] and b[j..]
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
     }
   }
+
+  const result: DiffLine[] = []
+  let i = 0
+  let j = 0
+  while (i < m && j < n) {
+    if (a[i] === b[j]) {
+      result.push({ kind: 'unchanged', text: a[i] })
+      i++
+      j++
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      result.push({ kind: 'removed', text: a[i] })
+      i++
+    } else {
+      result.push({ kind: 'added', text: b[j] })
+      j++
+    }
+  }
+  while (i < m) result.push({ kind: 'removed', text: a[i++] })
+  while (j < n) result.push({ kind: 'added', text: b[j++] })
   return result
 }
 
-// Summarize details into a short string for collapsed view
-function summarizeDetails(details: Record<string, unknown> | null): string {
-  if (!details) return '—'
-  const keys = Object.keys(details)
-  if (keys.length === 0) return '—'
+// Build diff lines based on the {old, new} shape
+function buildDiffLines(details: AuditDetails): DiffLine[] {
+  const { old: oldVal, new: newVal } = details
 
-  if ('old' in details && 'new' in details) {
-    return `${keys.length - 2 > 0 ? keys.length + ' fields' : 'value'} changed`
+  // CREATE: only new -> entire new rendered as added
+  if (oldVal === null || oldVal === undefined) {
+    return prettyJson(newVal)
+      .split('\n')
+      .map((text) => ({ kind: 'added' as const, text }))
   }
-  if (keys.length <= 2) {
-    return keys.map(k => `${k}: ${typeof details[k] === 'string' ? details[k] : JSON.stringify(details[k])}`).join(', ')
+
+  // DELETE: only old -> entire old rendered as removed
+  if (newVal === null || newVal === undefined) {
+    return prettyJson(oldVal)
+      .split('\n')
+      .map((text) => ({ kind: 'removed' as const, text }))
   }
-  return `${keys.length} fields`
+
+  // UPDATE: line diff between pretty-printed old and new
+  return lineDiff(prettyJson(oldVal), prettyJson(newVal))
 }
 
-// Render a value with appropriate formatting
-function renderValue(value: unknown): string {
-  if (value === null || value === undefined) return 'null'
-  if (typeof value === 'object') return JSON.stringify(value, null, 2)
-  return String(value)
+function DetailsDiffPanel({ details }: { details: AuditDetails }) {
+  const lines = useMemo(() => buildDiffLines(details), [details])
+
+  return (
+    <div className="bg-bg-tertiary rounded-md border border-border-default overflow-hidden">
+      <pre className="font-mono text-xs leading-5 m-0">
+        {lines.map((line, idx) => {
+          const prefix = line.kind === 'added' ? '+ ' : line.kind === 'removed' ? '- ' : '  '
+          const className =
+            line.kind === 'added'
+              ? 'bg-accent-green/10 text-accent-green'
+              : line.kind === 'removed'
+                ? 'bg-accent-red/10 text-accent-red'
+                : 'text-text-tertiary'
+          return (
+            <div key={idx} className={`px-3 ${className}`}>
+              <span className="select-none opacity-60">{prefix}</span>
+              {line.text || '\u00A0'}
+            </div>
+          )
+        })}
+      </pre>
+    </div>
+  )
 }
 
 export function AuditLogPage() {
@@ -82,7 +149,9 @@ export function AuditLogPage() {
     }
   }, [offset, actionFilter, targetTypeFilter])
 
-  useEffect(() => { loadAuditLog() }, [loadAuditLog])
+  useEffect(() => {
+    loadAuditLog()
+  }, [loadAuditLog])
 
   const handleFilter = () => {
     setOffset(0)
@@ -90,7 +159,7 @@ export function AuditLogPage() {
   }
 
   const toggleExpand = (id: number) => {
-    setExpandedIds(prev => {
+    setExpandedIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -141,7 +210,11 @@ export function AuditLogPage() {
         </button>
         {(actionFilter || targetTypeFilter) && (
           <button
-            onClick={() => { setActionFilter(''); setTargetTypeFilter(''); setOffset(0) }}
+            onClick={() => {
+              setActionFilter('')
+              setTargetTypeFilter('')
+              setOffset(0)
+            }}
             className="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary border border-border-default rounded-md"
           >
             Clear
@@ -151,129 +224,84 @@ export function AuditLogPage() {
 
       {/* Table */}
       <div className="border border-border-default rounded-lg overflow-hidden">
-        <table className="w-full">
+        <table className="w-full table-fixed">
+          <colgroup>
+            <col className="w-10" />
+            <col className="w-48" />
+            <col className="w-40" />
+            <col className="w-56" />
+            <col />
+          </colgroup>
           <thead>
             <tr className="text-left text-xs text-text-tertiary uppercase tracking-wide border-b border-border-default bg-bg-secondary">
-              <th className="px-4 py-3 font-medium w-8"></th>
+              <th className="px-4 py-3 font-medium"></th>
               <th className="px-4 py-3 font-medium">Time</th>
               <th className="px-4 py-3 font-medium">Admin</th>
               <th className="px-4 py-3 font-medium">Action</th>
               <th className="px-4 py-3 font-medium">Target</th>
-              <th className="px-4 py-3 font-medium">Summary</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-default">
             {loading ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center">
+                <td colSpan={5} className="px-4 py-8 text-center">
                   <div className="inline-block w-5 h-5 border-2 border-text-tertiary border-t-accent-blue rounded-full animate-spin" />
                 </td>
               </tr>
             ) : entries.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-text-tertiary text-sm">
+                <td colSpan={5} className="px-4 py-8 text-center text-text-tertiary text-sm">
                   No audit log entries found.
                 </td>
               </tr>
             ) : (
               entries.map((entry) => {
                 const isExpanded = expandedIds.has(entry.id)
-                const parsedDetails = parseDetails(entry.details)
-                const hasDetails = parsedDetails && Object.keys(parsedDetails).length > 0
+                const hasDetails = entry.details !== null && entry.details !== undefined
 
-                return (
+                return [
                   <tr
-                    key={entry.id}
-                    className={`text-sm ${hasDetails ? 'cursor-pointer hover:bg-bg-tertiary/30' : ''}`}
+                    key={`row-${entry.id}`}
+                    className={`text-sm ${hasDetails ? 'cursor-pointer hover:bg-bg-tertiary/40' : ''}`}
                     onClick={() => hasDetails && toggleExpand(entry.id)}
                   >
-                    <td colSpan={6} className="p-0">
-                      {/* Row content */}
-                      <div className="flex items-center px-4 py-3">
-                        {/* Expand arrow */}
-                        <div className="w-8 flex-shrink-0">
-                          {hasDetails && (
-                            <span className={`text-text-tertiary text-xs transition-transform inline-block ${isExpanded ? 'rotate-90' : ''}`}>
-                              ▶
-                            </span>
-                          )}
-                        </div>
-                        {/* Time */}
-                        <div className="w-40 flex-shrink-0 text-text-tertiary text-xs whitespace-nowrap">
-                          {new Date(entry.created_at).toLocaleString()}
-                        </div>
-                        {/* Admin */}
-                        <div className="w-32 flex-shrink-0 text-text-secondary truncate">
-                          {entry.admin_name || entry.admin_email || entry.admin_id}
-                        </div>
-                        {/* Action */}
-                        <div className="w-40 flex-shrink-0">
-                          <span className="px-2 py-0.5 text-xs rounded bg-bg-hover text-text-primary">
-                            {entry.action}
-                          </span>
-                        </div>
-                        {/* Target */}
-                        <div className="w-32 flex-shrink-0 text-text-secondary text-xs">
-                          {entry.target_type && (
-                            <span className="text-text-tertiary">{entry.target_type}:</span>
-                          )}{' '}
-                          {entry.target_id || '—'}
-                        </div>
-                        {/* Summary */}
-                        <div className="flex-1 text-text-tertiary text-xs truncate">
-                          {summarizeDetails(parsedDetails)}
-                        </div>
-                      </div>
-
-                      {/* Expanded details */}
-                      {isExpanded && parsedDetails && (
-                        <div className="px-4 pb-4 pl-12">
-                          <div className="bg-bg-tertiary rounded-md p-4 space-y-3">
-                            {/* Check for old/new pattern */}
-                            {'old' in parsedDetails && 'new' in parsedDetails ? (
-                              <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                  <p className="text-xs font-medium text-accent-red mb-2">Old Value</p>
-                                  <pre className="text-xs font-mono text-text-secondary whitespace-pre-wrap bg-accent-red/5 rounded p-2 border border-accent-red/10">
-                                    {renderValue(parsedDetails.old)}
-                                  </pre>
-                                </div>
-                                <div>
-                                  <p className="text-xs font-medium text-accent-green mb-2">New Value</p>
-                                  <pre className="text-xs font-mono text-text-secondary whitespace-pre-wrap bg-accent-green/5 rounded p-2 border border-accent-green/10">
-                                    {renderValue(parsedDetails.new)}
-                                  </pre>
-                                </div>
-                                {/* Other fields besides old/new */}
-                                {Object.entries(parsedDetails)
-                                  .filter(([k]) => k !== 'old' && k !== 'new')
-                                  .map(([key, val]) => (
-                                    <div key={key} className="col-span-2">
-                                      <span className="text-xs text-text-tertiary">{key}:</span>{' '}
-                                      <span className="text-xs text-text-primary font-mono">{renderValue(val)}</span>
-                                    </div>
-                                  ))
-                                }
-                              </div>
-                            ) : (
-                              /* Generic key-value display */
-                              <div className="space-y-1.5">
-                                {Object.entries(parsedDetails).map(([key, val]) => (
-                                  <div key={key} className="flex gap-3">
-                                    <span className="text-xs text-text-tertiary min-w-[80px]">{key}:</span>
-                                    <span className="text-xs text-text-primary font-mono break-all">
-                                      {renderValue(val)}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
+                    <td className="px-4 py-3 align-middle">
+                      {hasDetails && (
+                        <span
+                          className={`inline-block text-text-tertiary text-xs transition-transform ${
+                            isExpanded ? 'rotate-90' : ''
+                          }`}
+                        >
+                          ▶
+                        </span>
                       )}
                     </td>
-                  </tr>
-                )
+                    <td className="px-4 py-3 align-middle text-text-tertiary text-xs whitespace-nowrap">
+                      {new Date(entry.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 align-middle text-text-secondary truncate">
+                      {entry.admin_name || entry.admin_email || entry.admin_id}
+                    </td>
+                    <td className="px-4 py-3 align-middle">
+                      <span className="px-2 py-0.5 text-xs rounded bg-bg-hover text-text-primary font-mono">
+                        {entry.action}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 align-middle text-text-secondary text-xs truncate">
+                      {entry.target_type && (
+                        <span className="text-text-tertiary">{entry.target_type}: </span>
+                      )}
+                      {entry.target_id || '—'}
+                    </td>
+                  </tr>,
+                  isExpanded && hasDetails && entry.details ? (
+                    <tr key={`detail-${entry.id}`} className="bg-bg-secondary/40">
+                      <td colSpan={5} className="px-4 py-3 pl-14">
+                        <DetailsDiffPanel details={entry.details} />
+                      </td>
+                    </tr>
+                  ) : null,
+                ]
               })
             )}
           </tbody>
@@ -283,7 +311,9 @@ export function AuditLogPage() {
       {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-4 text-sm text-text-secondary">
-          <span>Page {currentPage} of {totalPages} ({total} entries)</span>
+          <span>
+            Page {currentPage} of {totalPages} ({total} entries)
+          </span>
           <div className="flex gap-2">
             <button
               onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}

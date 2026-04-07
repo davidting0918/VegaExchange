@@ -8,6 +8,17 @@ interface Setting {
   updated_at: string
 }
 
+// Backend returns JSONB columns as raw JSON strings via asyncpg. Parse strings
+// into their underlying value before display/edit; non-string values pass through.
+function parseJsonValue(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
 export function SettingsPage() {
   const [settings, setSettings] = useState<Setting[]>([])
   const [loading, setLoading] = useState(true)
@@ -42,7 +53,7 @@ export function SettingsPage() {
 
   const handleEdit = (setting: Setting) => {
     setEditingKey(setting.key)
-    setEditValue(JSON.stringify(setting.value, null, 2))
+    setEditValue(JSON.stringify(parseJsonValue(setting.value), null, 2))
     setMessage(null)
   }
 
@@ -193,7 +204,7 @@ export function SettingsPage() {
               ) : (
                 /* Read-only pretty display */
                 <pre className="text-xs text-text-secondary font-mono whitespace-pre-wrap leading-5">
-                  {JSON.stringify(s.value, null, 2)}
+                  {JSON.stringify(parseJsonValue(s.value), null, 2)}
                 </pre>
               )}
             </div>
