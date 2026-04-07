@@ -308,8 +308,8 @@ async def update_setting(
     result = await admin_service.update_setting(key, request.value)
     audit.set(
         target_id=key,
-        old={"value": result["old_value"]},
-        new={"value": request.value},
+        old=result["old_value"],
+        new=request.value,
     )
     return APIResponse(success=True, data=result["setting"])
 

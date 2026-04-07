@@ -16,32 +16,18 @@ interface AuditEntry {
   action: string
   target_type: string | null
   target_id: string | null
-  // Backend stores `details` as JSONB but asyncpg returns it as a raw JSON
-  // string, so the API ships it as a string. We parse it on the client.
-  details: AuditDetails | string | null
+  details: AuditDetails | null
   created_at: string
 }
 
 const PAGE_SIZE = 20
 
-// Parse JSON-encoded strings produced by asyncpg's default JSONB serialization.
-// Returns the parsed value, or the raw input on parse failure / non-string input.
-function parseJsonValue(raw: unknown): unknown {
-  if (typeof raw !== 'string') return raw
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return raw
-  }
-}
-
-// Normalize a raw `details` field into the typed AuditDetails shape, or null
-// if the value is missing / unparseable / not a {old, new} object.
-function normalizeDetails(raw: AuditDetails | string | null | undefined): AuditDetails | null {
+// Validate that the API-supplied details has the expected {old, new} shape.
+// Returns null when the field is missing, malformed, or not an object.
+function normalizeDetails(raw: unknown): AuditDetails | null {
   if (raw === null || raw === undefined) return null
-  const parsed = parseJsonValue(raw)
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-  const obj = parsed as Record<string, unknown>
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null
+  const obj = raw as Record<string, unknown>
   if (!('old' in obj) && !('new' in obj)) return null
   return {
     old: (obj.old ?? null) as DetailsValue,
