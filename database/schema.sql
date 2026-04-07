@@ -373,11 +373,6 @@ CREATE TABLE IF NOT EXISTS platform_settings (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Seed default init_funding setting
-INSERT INTO platform_settings (key, value, description) VALUES
-('init_funding', '{"USDT": 1000000, "ORDER": 1000, "AMM": 1000, "VEGA": 10000}',
- 'Default balances for new user registration')
-ON CONFLICT (key) DO NOTHING;
 
 -- =====================================================
 -- ADMIN AUDIT LOGS TABLE
