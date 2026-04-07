@@ -2,7 +2,6 @@
 Admin domain service — symbol CRUD, pool admin, settings, whitelist, audit log queries.
 """
 
-import json
 from decimal import Decimal
 from math import sqrt
 from typing import Any, List, Optional
@@ -34,7 +33,7 @@ async def create_symbol(request: CreateSymbolRequest, router: EngineRouter) -> d
         raise HTTPException(status_code=400, detail=f"Symbol '{request.symbol}' with engine_type CLOB already exists")
 
     settle_asset = request.settle if request.settle else request.quote_asset
-    engine_params_json = json.dumps(request.engine_params) if request.engine_params else "{}"
+    engine_params = request.engine_params or {}
 
     result = await db.execute_returning(
         """
@@ -42,7 +41,7 @@ async def create_symbol(request: CreateSymbolRequest, router: EngineRouter) -> d
             symbol, market, base, quote, settle, engine_type, is_active,
             engine_params, min_trade_amount, max_trade_amount,
             price_precision, quantity_precision
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
         """,
         request.symbol,
@@ -52,7 +51,7 @@ async def create_symbol(request: CreateSymbolRequest, router: EngineRouter) -> d
         settle_asset,
         request.engine_type.value,
         True,
-        engine_params_json,
+        engine_params,
         request.min_trade_amount,
         request.max_trade_amount,
         request.price_precision,
@@ -90,7 +89,6 @@ async def create_pool(request: CreatePoolRequest, router: EngineRouter) -> dict:
         "initial_reserve_quote": float(request.initial_reserve_quote),
         "fee_rate": float(request.fee_rate),
     }
-    engine_params_json = json.dumps(engine_params)
 
     symbol_result = await db.execute_returning(
         """
@@ -98,7 +96,7 @@ async def create_pool(request: CreatePoolRequest, router: EngineRouter) -> dict:
             symbol, market, base, quote, settle, engine_type, is_active,
             engine_params, min_trade_amount, max_trade_amount,
             price_precision, quantity_precision
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
         """,
         request.symbol,
@@ -108,7 +106,7 @@ async def create_pool(request: CreatePoolRequest, router: EngineRouter) -> dict:
         settle_asset,
         EngineType.AMM.value,
         True,
-        engine_params_json,
+        engine_params,
         request.min_trade_amount,
         request.max_trade_amount,
         request.price_precision,
@@ -320,8 +318,8 @@ async def update_symbol(symbol_id: int, request: UpdateSymbolRequest, router: En
     param_idx = 1
 
     if request.engine_params is not None:
-        updates.append(f"engine_params = ${param_idx}::jsonb")
-        params.append(json.dumps(request.engine_params))
+        updates.append(f"engine_params = ${param_idx}")
+        params.append(request.engine_params)
         param_idx += 1
         _track("engine_params", request.engine_params)
 
@@ -409,8 +407,8 @@ async def update_setting(key: str, value: Any) -> dict:
     old_value = existing["value"]
 
     await db.execute(
-        "UPDATE platform_settings SET value = $1::jsonb, updated_at = NOW() WHERE key = $2",
-        json.dumps(value),
+        "UPDATE platform_settings SET value = $1, updated_at = NOW() WHERE key = $2",
+        value,
         key,
     )
 

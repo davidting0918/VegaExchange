@@ -1,6 +1,9 @@
+import json
 import os
 from contextlib import asynccontextmanager
+from datetime import date, datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import asyncpg
@@ -9,6 +12,47 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv("backend/.env")
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """
+    Default JSON encoder hook for Python types that json.dumps doesn't
+    natively support but commonly appear in service results: Decimal,
+    datetime/date, asyncpg.Record, and Enum.
+    """
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, asyncpg.Record):
+        return dict(obj)
+    if isinstance(obj, Enum):
+        return obj.value
+    raise TypeError(f"Type {type(obj).__name__} is not JSON serializable")
+
+
+def _jsonb_dumps(value: Any) -> str:
+    """asyncpg JSONB encoder that tolerates Decimal / datetime / Record / Enum."""
+    return json.dumps(value, default=_to_jsonable)
+
+
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """
+    Per-connection initializer for the asyncpg pool.
+
+    Registers JSON / JSONB codecs so PostgreSQL JSON columns are auto-decoded
+    into Python dict / list values instead of being returned as raw JSON
+    strings (asyncpg's default). The encoder also handles Decimal, datetime,
+    asyncpg.Record, and Enum, so callers can pass arbitrary service results
+    into JSONB columns without manual serialization.
+    """
+    for type_name in ("jsonb", "json"):
+        await conn.set_type_codec(
+            type_name,
+            encoder=_jsonb_dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )
 
 
 class PostgresAsyncClient:
@@ -56,6 +100,7 @@ class PostgresAsyncClient:
                     min_size=1,
                     max_size=50,
                     command_timeout=60,
+                    init=_init_connection,
                 )
         finally:
             self._initializing = False

@@ -29,15 +29,10 @@ Audit logging failures are caught — they must never break the main operation.
 """
 
 import inspect
-import json
 import traceback
-from datetime import date, datetime
-from decimal import Decimal
 from enum import Enum
 from functools import wraps
 from typing import Any, Optional, Tuple
-
-import asyncpg
 
 from backend.core.db_manager import get_db
 
@@ -55,22 +50,26 @@ class AuditContext:
 
     def __init__(self):
         self.target_id: Optional[str] = None
-        self.old: Optional[dict] = None
-        self.new: Optional[dict] = None
+        self.old: Any = None
+        self.new: Any = None
         self.raw_details: Optional[dict] = None
 
     def set(
         self,
         target_id: str,
         *,
-        old: Optional[dict] = None,
-        new: Optional[dict] = None,
+        old: Any = None,
+        new: Any = None,
         details: Optional[dict] = None,
     ) -> None:
         """
         Populate audit metadata for the current request.
 
         For CRUD endpoints (decorator declares `op`), pass `old` and/or `new`.
+        These accept any JSON-serializable value (dict, list, primitive) so
+        resources whose state isn't a dict (e.g. a setting whose value is a
+        plain number) can still be audited.
+
         For non-CRUD endpoints, pass `details` as a raw dict.
         """
         self.target_id = target_id
@@ -84,12 +83,16 @@ def get_audit_context() -> AuditContext:
     return AuditContext()
 
 
-def _diff_changed_fields(old: dict, new: dict) -> Tuple[dict, dict]:
+def _diff_changed_fields(old: Any, new: Any) -> Tuple[Any, Any]:
     """
-    Return (old_changed, new_changed) containing only keys whose values differ
-    between old and new. Keys present in only one side are also considered
-    changed and included with `None` on the missing side.
+    Return (old_changed, new_changed). When both sides are dicts, only keys
+    whose values differ are kept (keys present on only one side are kept too,
+    with None on the missing side). Non-dict values (primitives, lists) are
+    returned as-is so the diff renderer can compare them at the value level.
     """
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return old, new
+
     changed_old: dict = {}
     changed_new: dict = {}
     for key in set(old.keys()) | set(new.keys()):
@@ -101,19 +104,6 @@ def _diff_changed_fields(old: dict, new: dict) -> Tuple[dict, dict]:
     return changed_old, changed_new
 
 
-def _audit_json_default(obj: Any) -> Any:
-    """JSON encoder hook for types commonly returned by services."""
-    if isinstance(obj, Decimal):
-        return float(obj)
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    if isinstance(obj, asyncpg.Record):
-        return dict(obj)
-    if isinstance(obj, Enum):
-        return obj.value
-    raise TypeError(f"Type {type(obj).__name__} is not JSON serializable for audit log")
-
-
 async def _write_audit_log(
     admin_id: str,
     action: str,
@@ -121,22 +111,25 @@ async def _write_audit_log(
     target_id: str,
     details: Optional[dict] = None,
 ) -> None:
-    """Insert a row into admin_audit_logs. Never raises."""
+    """
+    Insert a row into admin_audit_logs. Never raises.
+
+    `details` is passed directly as a Python dict; the asyncpg JSONB codec
+    (registered in postgres_database._init_connection) handles serialization,
+    including Decimal / datetime / Enum / Record values.
+    """
     try:
         db = get_db()
-        details_json = (
-            json.dumps(details, default=_audit_json_default) if details is not None else None
-        )
         await db.execute(
             """
             INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, details)
-            VALUES ($1, $2, $3, $4, $5::jsonb)
+            VALUES ($1, $2, $3, $4, $5)
             """,
             admin_id,
             action,
             target_type,
             target_id,
-            details_json,
+            details,
         )
     except Exception:
         print(f"[WARN] Failed to log admin action: {action} by {admin_id}")
