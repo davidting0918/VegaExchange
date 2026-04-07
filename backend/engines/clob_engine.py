@@ -5,7 +5,6 @@ Implements traditional order book matching with price-time priority.
 """
 
 import asyncio
-import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -494,7 +493,7 @@ class CLOBEngine(BaseEngine):
                         taker_fee,
                         self.quote_asset,
                         TradeStatus.COMPLETED.value,
-                        json.dumps({"is_taker": True, "matched_order_id": order["order_id"]}),
+                        {"is_taker": True, "matched_order_id": order["order_id"]},
                         order["user_id"],
                     )
 
@@ -520,7 +519,7 @@ class CLOBEngine(BaseEngine):
                         maker_fee,
                         self.quote_asset,
                         TradeStatus.COMPLETED.value,
-                        json.dumps({"is_taker": False, "matched_order_id": order["order_id"]}),
+                        {"is_taker": False, "matched_order_id": order["order_id"]},
                         user_id,
                     )
 
