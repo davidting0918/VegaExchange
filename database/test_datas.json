@@ -1,31 +1,37 @@
 {
-  "users": [
+  "platform_settings": [
     {
-      "email": "lp1@vegaexchange.com",
-      "password": "Lp1!",
-      "user_name": "Liquidity Provider 1"
-    },
-    {
-      "email": "lp2@vegaexchange.com",
-      "password": "Lp2@",
-      "user_name": "Liquidity Provider 2"
+      "key": "init_funding",
+      "value": {
+        "USDT": 1000000,
+        "VEGA": 10000
+      },
+      "description": "Default balances for new user registration"
     }
   ],
-  "amm_pools": [
+
+  "admin_whitelist": [
     {
-      "symbol": "AMM/USDT-USDT:SPOT",
-      "base_asset": "AMM",
-      "quote_asset": "USDT",
-      "market": "SPOT",
-      "settle": "USDT",
-      "initial_reserve_base": "10000000",
-      "initial_reserve_quote": "10000000",
-      "fee_rate": "0.001",
-      "min_trade_amount": "10",
-      "max_trade_amount": "100000000",
-      "price_precision": 8,
-      "quantity_precision": 8
-    },
+      "email": "dting0918@gmail.com",
+      "description": "Project owner"
+    }
+  ],
+
+  "admin": {
+    "google_id": "dev:dting0918",
+    "email": "dting0918@gmail.com",
+    "name": "David Ting"
+  },
+
+  "users": [
+    {
+      "email": "lp@vegaexchange.com",
+      "password": "Lp1!password",
+      "user_name": "Liquidity Provider"
+    }
+  ],
+
+  "amm_pools": [
     {
       "symbol": "VEGA/USDT-USDT:SPOT",
       "base_asset": "VEGA",
@@ -34,14 +40,15 @@
       "settle": "USDT",
       "initial_reserve_base": "10000000",
       "initial_reserve_quote": "100000000",
-      "fee_rate": "0.0003",
-      "min_trade_amount": "100",
+      "fee_rate": "0.003",
+      "min_trade_amount": "0.0001",
       "max_trade_amount": "1000000",
       "price_precision": 8,
       "quantity_precision": 8
     }
   ],
-  "orderbooks": [
+
+  "clob_symbols": [
     {
       "symbol": "VEGA/USDT-USDT:SPOT",
       "base_asset": "VEGA",
@@ -49,11 +56,16 @@
       "market": "SPOT",
       "settle": "USDT",
       "engine_type": 1,
-      "engine_params": {},
-      "min_trade_amount": "100",
+      "engine_params": {
+        "maker_fee": "0.0001",
+        "taker_fee": "0.0002",
+        "min_notional": "10"
+      },
+      "min_trade_amount": "0.0001",
       "max_trade_amount": "1000000",
-      "price_precision": 8,
-      "quantity_precision": 8
+      "price_precision": 4,
+      "quantity_precision": 8,
+      "init_price": "10"
     }
   ]
 }

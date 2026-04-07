@@ -32,10 +32,30 @@ npm run preview  # Preview production build
 ```
 
 ### Database (PostgreSQL 15+)
+
+The schema is defined in `database/schema.sql` (single source of truth).
+Use the helper scripts below — do not run `psql -f` directly, since the
+seed step depends on the FastAPI app being importable.
+
 ```bash
-# Apply schema
-psql -d vegaexchange_staging -f database/schema.sql
+# Initialize a fresh database from schema.sql
+python -m backend.scripts.init_db --env test --reset
+
+# Seed it with fixtures from database/test_datas.json
+python -m backend.scripts.seed_db --env test
+
+# Preview what seed_db would do without writing anything
+python -m backend.scripts.seed_db --env test --dry-run
+
+# One-shot reset workflow for local dev
+python -m backend.scripts.init_db --env test --reset && \
+  python -m backend.scripts.seed_db --env test
 ```
+
+`seed_db` writes `admin_whitelist` and `platform_settings` directly to the
+database (bootstrap state) and creates everything else by calling the real
+FastAPI endpoints in-process via httpx + ASGITransport. Admin Google login
+is mocked at script level — the production auth code path is untouched.
 
 ### Scripts (backend/scripts/)
 ```bash
